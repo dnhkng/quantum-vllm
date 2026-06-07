@@ -34,6 +34,7 @@ class SamplingStates:
         self.num_logprobs = np.empty(self.max_num_reqs, dtype=np.int32)
         # -1 means no logprobs are requested.
         self.num_logprobs.fill(NO_LOGPROBS)
+        self.quantum_floor = [None] * self.max_num_reqs
 
     def add_request(self, req_idx: int, sampling_params: SamplingParams) -> None:
         self.temperature.np[req_idx] = sampling_params.temperature
@@ -53,6 +54,7 @@ class SamplingStates:
         if num_logprobs is None:
             num_logprobs = NO_LOGPROBS
         self.num_logprobs[req_idx] = num_logprobs
+        self.quantum_floor[req_idx] = sampling_params.quantum_floor
 
     def apply_staged_writes(self) -> None:
         self.temperature.copy_to_uva()
@@ -102,3 +104,8 @@ class SamplingStates:
 
     def max_num_logprobs(self, idx_mapping_np: np.ndarray) -> int:
         return int(np.max(self.num_logprobs[idx_mapping_np]))
+
+    def has_quantum_floor(self, idx_mapping_np: np.ndarray) -> bool:
+        return any(
+            self.quantum_floor[int(req_idx)] is not None for req_idx in idx_mapping_np
+        )

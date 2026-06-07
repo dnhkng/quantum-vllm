@@ -25,6 +25,7 @@ from vllm.logprobs import Logprob
 from vllm.renderers import TokenizeParams
 from vllm.sampling_params import (
     BeamSearchParams,
+    QuantumFloorParams,
     RepetitionDetectionParams,
     RequestOutputKind,
     SamplingParams,
@@ -194,6 +195,10 @@ class CompletionRequest(OpenAIBaseModel):
             "-1 means unlimited (treated as unset)."
         ),
     )
+    quantum_floor: QuantumFloorParams | None = Field(
+        default=None,
+        description="QRNG-backed quantum-floor sampling parameters.",
+    )
 
     # --8<-- [end:completion-extra-params]
 
@@ -342,6 +347,7 @@ class CompletionRequest(OpenAIBaseModel):
             skip_clone=True,  # Created fresh per request, safe to skip clone
             repetition_detection=self.repetition_detection,
             thinking_token_budget=self.thinking_token_budget,
+            quantum_floor=self.quantum_floor,
         )
 
     @model_validator(mode="before")

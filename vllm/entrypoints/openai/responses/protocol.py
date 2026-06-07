@@ -65,6 +65,7 @@ from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
+    QuantumFloorParams,
     RequestOutputKind,
     SamplingParams,
     StructuredOutputsParams,
@@ -260,6 +261,10 @@ class ResponsesRequest(OpenAIBaseModel):
         default=None,
         description="Additional kwargs for structured outputs",
     )
+    quantum_floor: QuantumFloorParams | None = Field(
+        default=None,
+        description="QRNG-backed quantum-floor sampling parameters.",
+    )
 
     repetition_penalty: float | None = None
     seed: int | None = Field(None, ge=_INT64_MIN, le=_INT64_MAX)
@@ -422,6 +427,7 @@ class ResponsesRequest(OpenAIBaseModel):
             skip_clone=True,  # Created fresh per request, safe to skip clone
             skip_special_tokens=self.skip_special_tokens,
             include_stop_str_in_output=self.include_stop_str_in_output,
+            quantum_floor=self.quantum_floor,
         )
 
     def is_include_output_logprobs(self) -> bool:

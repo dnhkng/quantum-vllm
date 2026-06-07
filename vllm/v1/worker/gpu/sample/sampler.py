@@ -18,6 +18,11 @@ from vllm.v1.worker.gpu.sample.logprob import (
 )
 from vllm.v1.worker.gpu.sample.output import SamplerOutput
 from vllm.v1.worker.gpu.sample.penalties import PenaltiesState
+from vllm.v1.worker.gpu.sample.quantum_floor import (
+    QRNGSource,
+    TCPQRNGClient,
+    select_token_index,
+)
 from vllm.v1.worker.gpu.sample.states import NO_LOGPROBS, SamplingStates
 from vllm.v1.worker.gpu.states import RequestState
 
@@ -45,6 +50,7 @@ class Sampler:
         self.bad_words_state = BadWordsState(req_states)
         self.logprob_token_ids_state = LogprobTokenIdsState(max_num_reqs, device)
         self.num_speculative_tokens = num_speculative_tokens
+        self._qrng_clients: dict[tuple[str, int, int, int, bool], QRNGSource] = {}
 
     def add_request(
         self, req_idx: int, prompt_len: int, sampling_params: SamplingParams
@@ -196,4 +202,50 @@ class Sampler:
             apply_temperature=False,
             use_fp64=self.use_fp64_gumbel,
         )
+        if self.sampling_states.has_quantum_floor(idx_mapping_np):
+            sampled = self._sample_quantum_floor(
+                sampled,
+                processed_logits,
+                expanded_idx_mapping,
+            )
         return sampled, processed_logits
+
+    def _sample_quantum_floor(
+        self,
+        sampled: torch.Tensor,
+        processed_logits: torch.Tensor,
+        expanded_idx_mapping: torch.Tensor,
+    ) -> torch.Tensor:
+        sampled = sampled.clone()
+        expanded_req_indices = expanded_idx_mapping.detach().cpu().numpy()
+        logits_cpu = processed_logits.detach().to("cpu", dtype=torch.float64)
+
+        for row_idx, req_idx in enumerate(expanded_req_indices):
+            qf = self.sampling_states.quantum_floor[int(req_idx)]
+            if qf is None:
+                continue
+
+            row = logits_cpu[row_idx]
+            if not torch.isfinite(row).all():
+                raise RuntimeError(
+                    "quantum_floor requires finite full-vocabulary logits"
+                )
+            probs = torch.softmax(row, dim=-1).numpy()
+            raw = self._get_qrng_client(qf).read_u32()
+            token_idx = select_token_index(probs, raw, qf.k)
+            sampled[row_idx] = token_idx
+        return sampled
+
+    def _get_qrng_client(self, params) -> QRNGSource:
+        key = (
+            params.qrng_host,
+            params.qrng_port,
+            params.k,
+            params.recv_timeout_ms,
+            params.debug_samples,
+        )
+        client = self._qrng_clients.get(key)
+        if client is None:
+            client = TCPQRNGClient(params)
+            self._qrng_clients[key] = client
+        return client

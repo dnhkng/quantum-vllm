@@ -178,6 +178,17 @@ class RepetitionDetectionParams:
             )
 
 
+@dataclass
+class QuantumFloorParams:
+    """Parameters for QRNG-backed quantum-floor sampling."""
+
+    qrng_host: str
+    qrng_port: int = 5003
+    k: int = 64
+    recv_timeout_ms: int = 2000
+    debug_samples: bool = False
+
+
 class RequestOutputKind(Enum):
     # Return entire output so far in every RequestOutput
     CUMULATIVE = 0
@@ -350,6 +361,8 @@ class SamplingParams(
     when they hit the maximum output length (e.g. 'abcdabcdabcd...' or
     '\\emoji \\emoji \\emoji ...'). This feature can detect such behavior
     and terminate early, saving time and tokens."""
+    quantum_floor: QuantumFloorParams | None = None
+    """QRNG-backed full-vocabulary quantum-floor sampling parameters."""
 
     @staticmethod
     def from_optional(
@@ -382,6 +395,7 @@ class SamplingParams(
         extra_args: dict[str, Any] | None = None,
         skip_clone: bool = False,
         repetition_detection: RepetitionDetectionParams | None = None,
+        quantum_floor: QuantumFloorParams | None = None,
     ) -> "SamplingParams":
         if logit_bias is not None:
             # Convert token_id to integer
@@ -423,6 +437,7 @@ class SamplingParams(
             extra_args=extra_args,
             skip_clone=skip_clone,
             repetition_detection=repetition_detection,
+            quantum_floor=quantum_floor,
         )
 
     def __post_init__(self) -> None:
@@ -466,6 +481,7 @@ class SamplingParams(
             self.output_text_buffer_length = max(len(s) for s in self.stop) - 1
 
         self._verify_args()
+        self._verify_quantum_floor_args()
 
         if self.temperature < _SAMPLING_EPS:
             # Zero temperature means greedy sampling.
@@ -581,6 +597,96 @@ class SamplingParams(
             raise ValueError(
                 f"bad_words cannot contain an empty string. "
                 f"Got bad_words={self.bad_words}"
+            )
+
+    def _verify_quantum_floor_args(self) -> None:
+        if self.quantum_floor is None:
+            return
+
+        qf = self.quantum_floor
+        if not qf.qrng_host:
+            raise VLLMValidationError(
+                "quantum_floor.qrng_host must be non-empty.",
+                parameter="quantum_floor.qrng_host",
+                value=qf.qrng_host,
+            )
+        if qf.qrng_port <= 0 or qf.qrng_port > 65535:
+            raise VLLMValidationError(
+                "quantum_floor.qrng_port must be in [1, 65535].",
+                parameter="quantum_floor.qrng_port",
+                value=qf.qrng_port,
+            )
+        if qf.k < 1:
+            raise VLLMValidationError(
+                "quantum_floor.k must be >= 1.",
+                parameter="quantum_floor.k",
+                value=qf.k,
+            )
+        if qf.recv_timeout_ms <= 0:
+            raise VLLMValidationError(
+                "quantum_floor.recv_timeout_ms must be positive.",
+                parameter="quantum_floor.recv_timeout_ms",
+                value=qf.recv_timeout_ms,
+            )
+        if self.temperature < _SAMPLING_EPS:
+            raise VLLMValidationError(
+                "quantum_floor requires temperature > 0.",
+                parameter="temperature",
+                value=self.temperature,
+            )
+        if self.top_k not in (0, -1):
+            raise VLLMValidationError(
+                "quantum_floor requires top_k to be disabled.",
+                parameter="top_k",
+                value=self.top_k,
+            )
+        if self.top_p != 1.0:
+            raise VLLMValidationError(
+                "quantum_floor requires top_p == 1.0.",
+                parameter="top_p",
+                value=self.top_p,
+            )
+        if self.min_p != 0.0:
+            raise VLLMValidationError(
+                "quantum_floor requires min_p == 0.0.",
+                parameter="min_p",
+                value=self.min_p,
+            )
+        if self.ignore_eos:
+            raise VLLMValidationError(
+                "quantum_floor is incompatible with ignore_eos.",
+                parameter="ignore_eos",
+                value=self.ignore_eos,
+            )
+        if self.min_tokens != 0:
+            raise VLLMValidationError(
+                "quantum_floor is incompatible with min_tokens.",
+                parameter="min_tokens",
+                value=self.min_tokens,
+            )
+        if self.structured_outputs is not None:
+            raise VLLMValidationError(
+                "quantum_floor is incompatible with structured_outputs.",
+                parameter="structured_outputs",
+                value=self.structured_outputs,
+            )
+        if self.allowed_token_ids:
+            raise VLLMValidationError(
+                "quantum_floor is incompatible with allowed_token_ids.",
+                parameter="allowed_token_ids",
+                value=self.allowed_token_ids,
+            )
+        if self.logit_bias:
+            raise VLLMValidationError(
+                "quantum_floor is incompatible with logit_bias.",
+                parameter="logit_bias",
+                value=self.logit_bias,
+            )
+        if self.bad_words:
+            raise VLLMValidationError(
+                "quantum_floor is incompatible with bad_words.",
+                parameter="bad_words",
+                value=self.bad_words,
             )
 
     def _verify_greedy_sampling(self) -> None:
@@ -708,6 +814,7 @@ class SamplingParams(
         self._validate_logits_processors(model_config)
         self._validate_allowed_token_ids(tokenizer)
         self._validate_spec_decode(speculative_config)
+        self._validate_quantum_floor(model_config, speculative_config)
         self._validate_structured_outputs(structured_outputs_config, tokenizer)
 
     def _validate_logprobs(self, model_config: ModelConfig) -> None:
@@ -823,6 +930,27 @@ class SamplingParams(
             raise ValueError(
                 "The min_p and logit_bias sampling parameters "
                 "are not yet supported with speculative decoding."
+            )
+
+    def _validate_quantum_floor(
+        self,
+        model_config: ModelConfig,
+        speculative_config: SpeculativeConfig | None,
+    ) -> None:
+        if self.quantum_floor is None:
+            return
+        if speculative_config is not None:
+            raise VLLMValidationError(
+                "quantum_floor is incompatible with speculative decoding.",
+                parameter="quantum_floor",
+                value=self.quantum_floor,
+            )
+        vocab_size = model_config.get_vocab_size()
+        if self.quantum_floor.k * vocab_size > 2**32:
+            raise VLLMValidationError(
+                "quantum_floor.k * vocab_size exceeds the 2^32 address space.",
+                parameter="quantum_floor.k",
+                value=self.quantum_floor.k,
             )
 
     def _validate_structured_outputs(
@@ -986,6 +1114,7 @@ class SamplingParams(
             "spaces_between_special_tokens="
             f"{self.spaces_between_special_tokens}, "
             f"structured_outputs={self.structured_outputs}, "
+            f"quantum_floor={self.quantum_floor}, "
             f"extra_args={self.extra_args})"
         )
 

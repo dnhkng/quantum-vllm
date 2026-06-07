@@ -37,6 +37,7 @@ from vllm.logprobs import Logprob
 from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
     BeamSearchParams,
+    QuantumFloorParams,
     RepetitionDetectionParams,
     RequestOutputKind,
     SamplingParams,
@@ -227,6 +228,10 @@ class ChatCompletionRequest(OpenAIBaseModel):
         ),
     )
     thinking_token_budget: ThinkingTokenBudget = None
+    quantum_floor: QuantumFloorParams | None = Field(
+        default=None,
+        description="QRNG-backed quantum-floor sampling parameters.",
+    )
     include_reasoning: bool = True
     parallel_tool_calls: bool | None = True
 
@@ -643,6 +648,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             extra_args=extra_args or None,
             skip_clone=True,  # Created fresh per request, safe to skip clone
             repetition_detection=self.repetition_detection,
+            quantum_floor=self.quantum_floor,
         )
 
     @model_validator(mode="before")
