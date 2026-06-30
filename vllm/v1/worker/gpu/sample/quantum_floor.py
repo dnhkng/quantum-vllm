@@ -3,16 +3,20 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import math
-import socket
-import struct
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import deque
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Protocol
 
 import numpy as np
 
-from vllm.sampling_params import QuantumFloorParams
+from vllm.sampling_params import QuantumFloorParams, QuantumSeedParams
 
 QUANTUM_FLOOR_M = 1 << 32
 QUANTUM_FLOOR_MASK = QUANTUM_FLOOR_M - 1
@@ -128,22 +132,78 @@ def select_token_index(probs: np.ndarray, raw_u32: int, k: int) -> int:
     return int(np.searchsorted(alloc.cdf, spread, side="right"))
 
 
-class TCPQRNGClient:
-    def __init__(self, params: QuantumFloorParams):
-        timeout = params.recv_timeout_ms / 1000.0
-        self._sock = socket.create_connection(
-            (params.qrng_host, params.qrng_port), timeout=timeout
-        )
-        self._sock.settimeout(timeout)
+QuantumLeverParams = QuantumFloorParams | QuantumSeedParams
+
+
+class QuantumLeverClient:
+    def __init__(self, params: QuantumLeverParams):
+        self._params = params
+        self._bytes: deque[int] = deque()
 
     def read_u32(self) -> int:
-        data = bytearray()
-        while len(data) < 4:
-            chunk = self._sock.recv(4 - len(data))
-            if not chunk:
-                raise RuntimeError("quantum_floor QRNG socket closed")
-            data.extend(chunk)
-        return struct.unpack("<I", data)[0]
+        while len(self._bytes) < 4:
+            self._refill()
+
+        value = 0
+        for shift in range(0, 32, 8):
+            value |= self._bytes.popleft() << shift
+        return value
 
     def close(self) -> None:
-        self._sock.close()
+        self._bytes.clear()
+
+    def _refill(self) -> None:
+        url = self._snapshot_url()
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self._params.api_key}",
+                "User-Agent": "vllm quantum_floor",
+            },
+        )
+        timeout = self._params.recv_timeout_ms / 1000.0
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                "quantum_floor Quantum Lever entropy snapshot "
+                f"HTTP {exc.code}: {detail}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                "quantum_floor failed to fetch Quantum Lever entropy snapshot"
+            ) from exc
+
+        try:
+            payload = json.loads(body)
+            encoded = payload["bytes_b64"]
+            if not isinstance(encoded, str):
+                raise TypeError("bytes_b64 must be a string")
+            decoded = base64.b64decode(encoded, validate=True)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "quantum_floor Quantum Lever response missing valid bytes_b64"
+            ) from exc
+
+        if not decoded:
+            raise RuntimeError(
+                "quantum_floor Quantum Lever response contained no entropy bytes"
+            )
+        self._bytes.extend(decoded)
+
+    def _snapshot_url(self) -> str:
+        parsed = urllib.parse.urlsplit(self._params.api_url)
+        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        query.append(("bytes", str(max(4, self._params.buffer_size))))
+        return urllib.parse.urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                urllib.parse.urlencode(query),
+                parsed.fragment,
+            )
+        )

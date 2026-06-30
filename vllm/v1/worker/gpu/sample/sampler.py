@@ -20,7 +20,7 @@ from vllm.v1.worker.gpu.sample.output import SamplerOutput
 from vllm.v1.worker.gpu.sample.penalties import PenaltiesState
 from vllm.v1.worker.gpu.sample.quantum_floor import (
     QRNGSource,
-    TCPQRNGClient,
+    QuantumLeverClient,
     select_token_index,
 )
 from vllm.v1.worker.gpu.sample.states import NO_LOGPROBS, SamplingStates
@@ -238,14 +238,18 @@ class Sampler:
 
     def _get_qrng_client(self, params) -> QRNGSource:
         key = (
-            params.qrng_host,
-            params.qrng_port,
+            params.api_url,
+            params.api_key,
             params.k,
+            params.buffer_size,
             params.recv_timeout_ms,
+            params.require_full_vocab,
+            params.debug_tax,
             params.debug_samples,
+            params.log_path,
         )
         client = self._qrng_clients.get(key)
         if client is None:
-            client = TCPQRNGClient(params)
+            client = QuantumLeverClient(params)
             self._qrng_clients[key] = client
         return client

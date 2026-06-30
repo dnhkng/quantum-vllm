@@ -180,21 +180,26 @@ class RepetitionDetectionParams:
 
 @dataclass
 class QuantumFloorParams:
-    """Parameters for QRNG-backed quantum-floor sampling."""
+    """Parameters for Quantum Lever-backed quantum-floor sampling."""
 
-    qrng_host: str
-    qrng_port: int = 5003
+    api_url: str = "https://quantumlever.stream/v1/entropy/snapshot"
+    api_key: str = ""
     k: int = 64
+    buffer_size: int = 256
     recv_timeout_ms: int = 2000
+    require_full_vocab: bool = True
+    debug_tax: bool = False
     debug_samples: bool = False
+    log_path: str = ""
 
 
 @dataclass
 class QuantumSeedParams:
-    """Parameters for QRNG-backed per-request PRNG seeding."""
+    """Parameters for Quantum Lever-backed per-request PRNG seeding."""
 
-    qrng_host: str
-    qrng_port: int = 5003
+    api_url: str = "https://quantumlever.stream/v1/entropy/snapshot"
+    api_key: str = ""
+    buffer_size: int = 256
     recv_timeout_ms: int = 2000
 
 
@@ -618,17 +623,23 @@ class SamplingParams(
             return
 
         qs = self.quantum_seed
-        if not qs.qrng_host:
+        if not qs.api_url:
             raise VLLMValidationError(
-                "quantum_seed.qrng_host must be non-empty.",
-                parameter="quantum_seed.qrng_host",
-                value=qs.qrng_host,
+                "quantum_seed.api_url must be non-empty.",
+                parameter="quantum_seed.api_url",
+                value=qs.api_url,
             )
-        if qs.qrng_port <= 0 or qs.qrng_port > 65535:
+        if not qs.api_key:
             raise VLLMValidationError(
-                "quantum_seed.qrng_port must be in [1, 65535].",
-                parameter="quantum_seed.qrng_port",
-                value=qs.qrng_port,
+                "quantum_seed.api_key must be non-empty.",
+                parameter="quantum_seed.api_key",
+                value=qs.api_key,
+            )
+        if qs.buffer_size < 4:
+            raise VLLMValidationError(
+                "quantum_seed.buffer_size must be >= 4.",
+                parameter="quantum_seed.buffer_size",
+                value=qs.buffer_size,
             )
         if qs.recv_timeout_ms <= 0:
             raise VLLMValidationError(
@@ -654,23 +665,35 @@ class SamplingParams(
             return
 
         qf = self.quantum_floor
-        if not qf.qrng_host:
+        if not qf.api_url:
             raise VLLMValidationError(
-                "quantum_floor.qrng_host must be non-empty.",
-                parameter="quantum_floor.qrng_host",
-                value=qf.qrng_host,
+                "quantum_floor.api_url must be non-empty.",
+                parameter="quantum_floor.api_url",
+                value=qf.api_url,
             )
-        if qf.qrng_port <= 0 or qf.qrng_port > 65535:
+        if not qf.api_key:
             raise VLLMValidationError(
-                "quantum_floor.qrng_port must be in [1, 65535].",
-                parameter="quantum_floor.qrng_port",
-                value=qf.qrng_port,
+                "quantum_floor.api_key must be non-empty.",
+                parameter="quantum_floor.api_key",
+                value=qf.api_key,
             )
         if qf.k < 1:
             raise VLLMValidationError(
                 "quantum_floor.k must be >= 1.",
                 parameter="quantum_floor.k",
                 value=qf.k,
+            )
+        if not qf.require_full_vocab:
+            raise VLLMValidationError(
+                "quantum_floor.require_full_vocab must be true.",
+                parameter="quantum_floor.require_full_vocab",
+                value=qf.require_full_vocab,
+            )
+        if qf.buffer_size < 4:
+            raise VLLMValidationError(
+                "quantum_floor.buffer_size must be >= 4.",
+                parameter="quantum_floor.buffer_size",
+                value=qf.buffer_size,
             )
         if qf.recv_timeout_ms <= 0:
             raise VLLMValidationError(

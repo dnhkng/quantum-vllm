@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import socket
-import struct
+import base64
+import json
 import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from random import Random
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 import pytest
@@ -18,7 +20,7 @@ from vllm.sampling_params import QuantumFloorParams, QuantumSeedParams, Sampling
 from vllm.v1.worker.gpu.sample.quantum_floor import (
     QUANTUM_FLOOR_M,
     QUANTUM_FLOOR_MASK,
-    TCPQRNGClient,
+    QuantumLeverClient,
     build_allocation,
     compute_g_rows,
     select_token_index,
@@ -33,6 +35,43 @@ class FakeQRNGSource:
 
     def read_u32(self):
         return self.words.pop(0)
+
+
+class EntropyHandler(BaseHTTPRequestHandler):
+    entropy = b""
+    offset = 0
+    requests = []
+
+    def do_GET(self):
+        EntropyHandler.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+            }
+        )
+        parsed = urlsplit(self.path)
+        if parsed.path == "/health":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+            return
+
+        requested = int(parse_qs(parsed.query).get("bytes", ["4"])[0])
+        start = EntropyHandler.offset
+        end = start + requested
+        EntropyHandler.offset = end
+        payload = {
+            "bytes_b64": base64.b64encode(EntropyHandler.entropy[start:end]).decode(
+                "ascii"
+            )
+        }
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(payload).encode("utf-8"))
+
+    def log_message(self, format, *args):
+        return
 
 
 def test_quantum_floor_spreader_is_involutive():
@@ -71,27 +110,20 @@ def test_quantum_floor_selects_expected_token_for_simple_distribution():
     assert select_token_index(probs, raw_u32=0, k=1) == 0
 
 
-def test_tcp_qrng_client_reads_little_endian_words():
-    listen_fd = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listen_fd.bind(("127.0.0.1", 0))
-    listen_fd.listen(1)
-    port = listen_fd.getsockname()[1]
+def test_quantum_lever_client_reads_little_endian_words():
     rng = Random(12345)
     words = [rng.getrandbits(32) for _ in range(16)]
-
-    def serve():
-        conn, _ = listen_fd.accept()
-        with conn:
-            for word in words:
-                conn.sendall(struct.pack("<I", word))
-        listen_fd.close()
-
-    thread = threading.Thread(target=serve)
+    EntropyHandler.entropy = b"".join(word.to_bytes(4, "little") for word in words)
+    EntropyHandler.offset = 0
+    EntropyHandler.requests = []
+    server = HTTPServer(("127.0.0.1", 0), EntropyHandler)
+    thread = threading.Thread(target=server.serve_forever)
     thread.start()
-    client = TCPQRNGClient(
+    client = QuantumLeverClient(
         QuantumFloorParams(
-            qrng_host="127.0.0.1",
-            qrng_port=port,
+            api_url=f"http://127.0.0.1:{server.server_port}/entropy",
+            api_key="test-key",
+            buffer_size=16,
             recv_timeout_ms=1000,
         )
     )
@@ -99,18 +131,37 @@ def test_tcp_qrng_client_reads_little_endian_words():
         assert [client.read_u32() for _ in words] == words
     finally:
         client.close()
+        server.shutdown()
         thread.join(timeout=2)
+
+    assert EntropyHandler.requests
+    assert EntropyHandler.requests[0]["authorization"] == "Bearer test-key"
+    assert parse_qs(urlsplit(EntropyHandler.requests[0]["path"]).query)["bytes"] == [
+        "16"
+    ]
 
 
 def test_sampler_quantum_floor_branch_replaces_only_qrng_rows():
-    qf = QuantumFloorParams(qrng_host="127.0.0.1", qrng_port=5555, k=1)
+    qf = QuantumFloorParams(api_key="test-key", k=1)
     sampler = Sampler.__new__(Sampler)
     sampler.sampling_states = type(
         "SamplingStates",
         (),
         {"quantum_floor": [qf, None]},
     )()
-    sampler._qrng_clients = {("127.0.0.1", 5555, 1, 2000, False): FakeQRNGSource([0])}
+    sampler._qrng_clients = {
+        (
+            qf.api_url,
+            qf.api_key,
+            qf.k,
+            qf.buffer_size,
+            qf.recv_timeout_ms,
+            qf.require_full_vocab,
+            qf.debug_tax,
+            qf.debug_samples,
+            qf.log_path,
+        ): FakeQRNGSource([0])
+    }
 
     sampled = torch.tensor([9, 8])
     logits = torch.log(torch.tensor([[0.25, 0.25, 0.25, 0.25], [0.1, 0.2, 0.3, 0.4]]))
@@ -135,20 +186,42 @@ def test_sampler_quantum_floor_branch_replaces_only_qrng_rows():
         ({"allowed_token_ids": [1]}, "allowed_token_ids"),
         ({"logit_bias": {1: 1.0}}, "logit_bias"),
         ({"bad_words": ["bad"]}, "bad_words"),
+        (
+            {"quantum_floor": QuantumFloorParams(api_key="")},
+            "quantum_floor.api_key",
+        ),
+        (
+            {"quantum_floor": QuantumFloorParams(api_url="", api_key="test-key")},
+            "quantum_floor.api_url",
+        ),
+        (
+            {
+                "quantum_floor": QuantumFloorParams(
+                    api_key="test-key", buffer_size=3
+                )
+            },
+            "quantum_floor.buffer_size",
+        ),
+        (
+            {
+                "quantum_floor": QuantumFloorParams(
+                    api_key="test-key", require_full_vocab=False
+                )
+            },
+            "quantum_floor.require_full_vocab",
+        ),
     ],
 )
 def test_sampling_params_rejects_incompatible_quantum_floor(kwargs, parameter):
+    kwargs.setdefault("quantum_floor", QuantumFloorParams(api_key="test-key"))
     with pytest.raises(VLLMValidationError) as exc_info:
-        SamplingParams(
-            quantum_floor=QuantumFloorParams(qrng_host="127.0.0.1"),
-            **kwargs,
-        )
+        SamplingParams(**kwargs)
     assert exc_info.value.parameter == parameter
 
 
 def test_sampling_params_rejects_quantum_floor_spec_decode_and_large_k():
     params = SamplingParams(
-        quantum_floor=QuantumFloorParams(qrng_host="127.0.0.1", k=2)
+        quantum_floor=QuantumFloorParams(api_key="test-key", k=2)
     )
 
     class ModelConfig:
@@ -168,30 +241,31 @@ def test_sampling_params_rejects_quantum_floor_spec_decode_and_large_k():
 @pytest.mark.parametrize(
     "kwargs, parameter",
     [
-        ({"quantum_seed": QuantumSeedParams(qrng_host="")}, "quantum_seed.qrng_host"),
+        ({"quantum_seed": QuantumSeedParams(api_url="")}, "quantum_seed.api_url"),
+        ({"quantum_seed": QuantumSeedParams(api_key="")}, "quantum_seed.api_key"),
         (
-            {"quantum_seed": QuantumSeedParams(qrng_host="127.0.0.1", qrng_port=0)},
-            "quantum_seed.qrng_port",
+            {"quantum_seed": QuantumSeedParams(api_key="test-key", buffer_size=3)},
+            "quantum_seed.buffer_size",
         ),
         (
             {
                 "quantum_seed": QuantumSeedParams(
-                    qrng_host="127.0.0.1", recv_timeout_ms=0
+                    api_key="test-key", recv_timeout_ms=0
                 )
             },
             "quantum_seed.recv_timeout_ms",
         ),
         (
             {
-                "quantum_seed": QuantumSeedParams(qrng_host="127.0.0.1"),
+                "quantum_seed": QuantumSeedParams(api_key="test-key"),
                 "seed": 1234,
             },
             "seed",
         ),
         (
             {
-                "quantum_seed": QuantumSeedParams(qrng_host="127.0.0.1"),
-                "quantum_floor": QuantumFloorParams(qrng_host="127.0.0.1"),
+                "quantum_seed": QuantumSeedParams(api_key="test-key"),
+                "quantum_floor": QuantumFloorParams(api_key="test-key"),
             },
             "quantum_seed",
         ),
@@ -206,64 +280,58 @@ def test_sampling_params_rejects_invalid_quantum_seed(kwargs, parameter):
 def test_openai_completion_request_maps_quantum_floor():
     request = CompletionRequest(
         prompt="hello",
-        quantum_floor={"qrng_host": "127.0.0.1", "qrng_port": 5555, "k": 7},
+        quantum_floor={"api_key": "test-key", "k": 7, "buffer_size": 32},
     )
     params = request.to_sampling_params(max_tokens=4)
     assert params.quantum_floor == QuantumFloorParams(
-        qrng_host="127.0.0.1", qrng_port=5555, k=7
+        api_key="test-key", k=7, buffer_size=32
     )
 
 
 def test_openai_completion_request_maps_quantum_seed():
     request = CompletionRequest(
         prompt="hello",
-        quantum_seed={"qrng_host": "127.0.0.1", "qrng_port": 5555},
+        quantum_seed={"api_key": "test-key", "buffer_size": 32},
     )
     params = request.to_sampling_params(max_tokens=4)
-    assert params.quantum_seed == QuantumSeedParams(
-        qrng_host="127.0.0.1", qrng_port=5555
-    )
+    assert params.quantum_seed == QuantumSeedParams(api_key="test-key", buffer_size=32)
 
 
 def test_openai_chat_request_maps_quantum_floor():
     request = ChatCompletionRequest(
         messages=[{"role": "user", "content": "hello"}],
-        quantum_floor={"qrng_host": "127.0.0.1", "qrng_port": 5555, "k": 7},
+        quantum_floor={"api_key": "test-key", "k": 7, "buffer_size": 32},
     )
     params = request.to_sampling_params(max_tokens=4, default_sampling_params={})
     assert params.quantum_floor == QuantumFloorParams(
-        qrng_host="127.0.0.1", qrng_port=5555, k=7
+        api_key="test-key", k=7, buffer_size=32
     )
 
 
 def test_openai_chat_request_maps_quantum_seed():
     request = ChatCompletionRequest(
         messages=[{"role": "user", "content": "hello"}],
-        quantum_seed={"qrng_host": "127.0.0.1", "qrng_port": 5555},
+        quantum_seed={"api_key": "test-key", "buffer_size": 32},
     )
     params = request.to_sampling_params(max_tokens=4, default_sampling_params={})
-    assert params.quantum_seed == QuantumSeedParams(
-        qrng_host="127.0.0.1", qrng_port=5555
-    )
+    assert params.quantum_seed == QuantumSeedParams(api_key="test-key", buffer_size=32)
 
 
 def test_openai_responses_request_maps_quantum_floor():
     request = ResponsesRequest(
         input="hello",
-        quantum_floor={"qrng_host": "127.0.0.1", "qrng_port": 5555, "k": 7},
+        quantum_floor={"api_key": "test-key", "k": 7, "buffer_size": 32},
     )
     params = request.to_sampling_params(default_max_tokens=4)
     assert params.quantum_floor == QuantumFloorParams(
-        qrng_host="127.0.0.1", qrng_port=5555, k=7
+        api_key="test-key", k=7, buffer_size=32
     )
 
 
 def test_openai_responses_request_maps_quantum_seed():
     request = ResponsesRequest(
         input="hello",
-        quantum_seed={"qrng_host": "127.0.0.1", "qrng_port": 5555},
+        quantum_seed={"api_key": "test-key", "buffer_size": 32},
     )
     params = request.to_sampling_params(default_max_tokens=4)
-    assert params.quantum_seed == QuantumSeedParams(
-        qrng_host="127.0.0.1", qrng_port=5555
-    )
+    assert params.quantum_seed == QuantumSeedParams(api_key="test-key", buffer_size=32)
