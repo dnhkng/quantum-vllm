@@ -26,6 +26,7 @@ from vllm.renderers import TokenizeParams
 from vllm.sampling_params import (
     BeamSearchParams,
     QuantumFloorParams,
+    QuantumSeedParams,
     RepetitionDetectionParams,
     RequestOutputKind,
     SamplingParams,
@@ -199,6 +200,10 @@ class CompletionRequest(OpenAIBaseModel):
         default=None,
         description="QRNG-backed quantum-floor sampling parameters.",
     )
+    quantum_seed: QuantumSeedParams | None = Field(
+        default=None,
+        description="QRNG-backed per-request PRNG seed parameters.",
+    )
 
     # --8<-- [end:completion-extra-params]
 
@@ -348,6 +353,7 @@ class CompletionRequest(OpenAIBaseModel):
             repetition_detection=self.repetition_detection,
             thinking_token_budget=self.thinking_token_budget,
             quantum_floor=self.quantum_floor,
+            quantum_seed=self.quantum_seed,
         )
 
     @model_validator(mode="before")

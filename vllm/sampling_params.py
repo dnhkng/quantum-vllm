@@ -189,6 +189,15 @@ class QuantumFloorParams:
     debug_samples: bool = False
 
 
+@dataclass
+class QuantumSeedParams:
+    """Parameters for QRNG-backed per-request PRNG seeding."""
+
+    qrng_host: str
+    qrng_port: int = 5003
+    recv_timeout_ms: int = 2000
+
+
 class RequestOutputKind(Enum):
     # Return entire output so far in every RequestOutput
     CUMULATIVE = 0
@@ -363,6 +372,8 @@ class SamplingParams(
     and terminate early, saving time and tokens."""
     quantum_floor: QuantumFloorParams | None = None
     """QRNG-backed full-vocabulary quantum-floor sampling parameters."""
+    quantum_seed: QuantumSeedParams | None = None
+    """Read one QRNG word and use it as this request's sampler seed."""
 
     @staticmethod
     def from_optional(
@@ -396,6 +407,7 @@ class SamplingParams(
         skip_clone: bool = False,
         repetition_detection: RepetitionDetectionParams | None = None,
         quantum_floor: QuantumFloorParams | None = None,
+        quantum_seed: QuantumSeedParams | None = None,
     ) -> "SamplingParams":
         if logit_bias is not None:
             # Convert token_id to integer
@@ -438,6 +450,7 @@ class SamplingParams(
             skip_clone=skip_clone,
             repetition_detection=repetition_detection,
             quantum_floor=quantum_floor,
+            quantum_seed=quantum_seed,
         )
 
     def __post_init__(self) -> None:
@@ -481,6 +494,7 @@ class SamplingParams(
             self.output_text_buffer_length = max(len(s) for s in self.stop) - 1
 
         self._verify_args()
+        self._verify_quantum_seed_args()
         self._verify_quantum_floor_args()
 
         if self.temperature < _SAMPLING_EPS:
@@ -597,6 +611,42 @@ class SamplingParams(
             raise ValueError(
                 f"bad_words cannot contain an empty string. "
                 f"Got bad_words={self.bad_words}"
+            )
+
+    def _verify_quantum_seed_args(self) -> None:
+        if self.quantum_seed is None:
+            return
+
+        qs = self.quantum_seed
+        if not qs.qrng_host:
+            raise VLLMValidationError(
+                "quantum_seed.qrng_host must be non-empty.",
+                parameter="quantum_seed.qrng_host",
+                value=qs.qrng_host,
+            )
+        if qs.qrng_port <= 0 or qs.qrng_port > 65535:
+            raise VLLMValidationError(
+                "quantum_seed.qrng_port must be in [1, 65535].",
+                parameter="quantum_seed.qrng_port",
+                value=qs.qrng_port,
+            )
+        if qs.recv_timeout_ms <= 0:
+            raise VLLMValidationError(
+                "quantum_seed.recv_timeout_ms must be positive.",
+                parameter="quantum_seed.recv_timeout_ms",
+                value=qs.recv_timeout_ms,
+            )
+        if self.seed is not None:
+            raise VLLMValidationError(
+                "quantum_seed cannot be used with an explicit seed.",
+                parameter="seed",
+                value=self.seed,
+            )
+        if self.quantum_floor is not None:
+            raise VLLMValidationError(
+                "quantum_seed cannot be used with quantum_floor.",
+                parameter="quantum_seed",
+                value=qs,
             )
 
     def _verify_quantum_floor_args(self) -> None:
@@ -1114,6 +1164,7 @@ class SamplingParams(
             "spaces_between_special_tokens="
             f"{self.spaces_between_special_tokens}, "
             f"structured_outputs={self.structured_outputs}, "
+            f"quantum_seed={self.quantum_seed}, "
             f"quantum_floor={self.quantum_floor}, "
             f"extra_args={self.extra_args})"
         )

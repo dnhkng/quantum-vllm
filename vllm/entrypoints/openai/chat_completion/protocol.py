@@ -38,6 +38,7 @@ from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
     BeamSearchParams,
     QuantumFloorParams,
+    QuantumSeedParams,
     RepetitionDetectionParams,
     RequestOutputKind,
     SamplingParams,
@@ -231,6 +232,10 @@ class ChatCompletionRequest(OpenAIBaseModel):
     quantum_floor: QuantumFloorParams | None = Field(
         default=None,
         description="QRNG-backed quantum-floor sampling parameters.",
+    )
+    quantum_seed: QuantumSeedParams | None = Field(
+        default=None,
+        description="QRNG-backed per-request PRNG seed parameters.",
     )
     include_reasoning: bool = True
     parallel_tool_calls: bool | None = True
@@ -649,6 +654,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             skip_clone=True,  # Created fresh per request, safe to skip clone
             repetition_detection=self.repetition_detection,
             quantum_floor=self.quantum_floor,
+            quantum_seed=self.quantum_seed,
         )
 
     @model_validator(mode="before")

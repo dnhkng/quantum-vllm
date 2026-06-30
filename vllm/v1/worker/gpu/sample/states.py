@@ -8,6 +8,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p
 from vllm.v1.worker.gpu.buffer_utils import UvaBackedTensor
 from vllm.v1.worker.gpu.sample.gumbel import apply_temperature
 from vllm.v1.worker.gpu.sample.min_p import apply_min_p
+from vllm.v1.worker.gpu.sample.quantum_floor import TCPQRNGClient
 
 NO_LOGPROBS = -1
 _NP_INT64_MIN = np.iinfo(np.int64).min
@@ -46,6 +47,12 @@ class SamplingStates:
         self.min_p.np[req_idx] = sampling_params.min_p
 
         seed = sampling_params.seed
+        if sampling_params.quantum_seed is not None:
+            client = TCPQRNGClient(sampling_params.quantum_seed)
+            try:
+                seed = client.read_u32()
+            finally:
+                client.close()
         if seed is None:
             seed = np.random.randint(_NP_INT64_MIN, _NP_INT64_MAX)
         self.seeds.np[req_idx] = seed

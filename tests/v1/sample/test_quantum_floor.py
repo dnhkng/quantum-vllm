@@ -14,7 +14,7 @@ from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionReque
 from vllm.entrypoints.openai.completion.protocol import CompletionRequest
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.exceptions import VLLMValidationError
-from vllm.sampling_params import QuantumFloorParams, SamplingParams
+from vllm.sampling_params import QuantumFloorParams, QuantumSeedParams, SamplingParams
 from vllm.v1.worker.gpu.sample.quantum_floor import (
     QUANTUM_FLOOR_M,
     QUANTUM_FLOOR_MASK,
@@ -165,6 +165,44 @@ def test_sampling_params_rejects_quantum_floor_spec_decode_and_large_k():
     assert exc_info.value.parameter == "quantum_floor"
 
 
+@pytest.mark.parametrize(
+    "kwargs, parameter",
+    [
+        ({"quantum_seed": QuantumSeedParams(qrng_host="")}, "quantum_seed.qrng_host"),
+        (
+            {"quantum_seed": QuantumSeedParams(qrng_host="127.0.0.1", qrng_port=0)},
+            "quantum_seed.qrng_port",
+        ),
+        (
+            {
+                "quantum_seed": QuantumSeedParams(
+                    qrng_host="127.0.0.1", recv_timeout_ms=0
+                )
+            },
+            "quantum_seed.recv_timeout_ms",
+        ),
+        (
+            {
+                "quantum_seed": QuantumSeedParams(qrng_host="127.0.0.1"),
+                "seed": 1234,
+            },
+            "seed",
+        ),
+        (
+            {
+                "quantum_seed": QuantumSeedParams(qrng_host="127.0.0.1"),
+                "quantum_floor": QuantumFloorParams(qrng_host="127.0.0.1"),
+            },
+            "quantum_seed",
+        ),
+    ],
+)
+def test_sampling_params_rejects_invalid_quantum_seed(kwargs, parameter):
+    with pytest.raises(VLLMValidationError) as exc_info:
+        SamplingParams(**kwargs)
+    assert exc_info.value.parameter == parameter
+
+
 def test_openai_completion_request_maps_quantum_floor():
     request = CompletionRequest(
         prompt="hello",
@@ -173,6 +211,17 @@ def test_openai_completion_request_maps_quantum_floor():
     params = request.to_sampling_params(max_tokens=4)
     assert params.quantum_floor == QuantumFloorParams(
         qrng_host="127.0.0.1", qrng_port=5555, k=7
+    )
+
+
+def test_openai_completion_request_maps_quantum_seed():
+    request = CompletionRequest(
+        prompt="hello",
+        quantum_seed={"qrng_host": "127.0.0.1", "qrng_port": 5555},
+    )
+    params = request.to_sampling_params(max_tokens=4)
+    assert params.quantum_seed == QuantumSeedParams(
+        qrng_host="127.0.0.1", qrng_port=5555
     )
 
 
@@ -187,6 +236,17 @@ def test_openai_chat_request_maps_quantum_floor():
     )
 
 
+def test_openai_chat_request_maps_quantum_seed():
+    request = ChatCompletionRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        quantum_seed={"qrng_host": "127.0.0.1", "qrng_port": 5555},
+    )
+    params = request.to_sampling_params(max_tokens=4, default_sampling_params={})
+    assert params.quantum_seed == QuantumSeedParams(
+        qrng_host="127.0.0.1", qrng_port=5555
+    )
+
+
 def test_openai_responses_request_maps_quantum_floor():
     request = ResponsesRequest(
         input="hello",
@@ -195,4 +255,15 @@ def test_openai_responses_request_maps_quantum_floor():
     params = request.to_sampling_params(default_max_tokens=4)
     assert params.quantum_floor == QuantumFloorParams(
         qrng_host="127.0.0.1", qrng_port=5555, k=7
+    )
+
+
+def test_openai_responses_request_maps_quantum_seed():
+    request = ResponsesRequest(
+        input="hello",
+        quantum_seed={"qrng_host": "127.0.0.1", "qrng_port": 5555},
+    )
+    params = request.to_sampling_params(default_max_tokens=4)
+    assert params.quantum_seed == QuantumSeedParams(
+        qrng_host="127.0.0.1", qrng_port=5555
     )

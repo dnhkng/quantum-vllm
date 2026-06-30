@@ -66,6 +66,7 @@ from vllm.logger import init_logger
 from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
     QuantumFloorParams,
+    QuantumSeedParams,
     RequestOutputKind,
     SamplingParams,
     StructuredOutputsParams,
@@ -265,6 +266,10 @@ class ResponsesRequest(OpenAIBaseModel):
         default=None,
         description="QRNG-backed quantum-floor sampling parameters.",
     )
+    quantum_seed: QuantumSeedParams | None = Field(
+        default=None,
+        description="QRNG-backed per-request PRNG seed parameters.",
+    )
 
     repetition_penalty: float | None = None
     seed: int | None = Field(None, ge=_INT64_MIN, le=_INT64_MAX)
@@ -428,6 +433,7 @@ class ResponsesRequest(OpenAIBaseModel):
             skip_special_tokens=self.skip_special_tokens,
             include_stop_str_in_output=self.include_stop_str_in_output,
             quantum_floor=self.quantum_floor,
+            quantum_seed=self.quantum_seed,
         )
 
     def is_include_output_logprobs(self) -> bool:
