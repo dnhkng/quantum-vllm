@@ -63,6 +63,7 @@ from vllm.entrypoints.chat_utils import (
 from vllm.entrypoints.openai.engine.protocol import OpenAIBaseModel
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
+from vllm.quantum.compat import resolve_quantum_params
 from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
 from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
@@ -269,6 +270,34 @@ class ResponsesRequest(OpenAIBaseModel):
         default=None,
         description="Quantum Lever-backed per-request PRNG seed parameters.",
     )
+    quantum_api_key: str | None = Field(
+        default=None,
+        description="Quantum Lever API bearer key.",
+    )
+    quantum_api_url: str | None = Field(
+        default=None,
+        description="Quantum Lever API base URL.",
+    )
+    quantum_source: Literal["qrng", "lever"] | None = Field(
+        default=None,
+        description="Quantum Lever entropy source.",
+    )
+    quantum_sampler: bool | None = Field(
+        default=None,
+        description="Use the subscriber-only quantum_floor sampler.",
+    )
+    quantum_personalization: str | None = Field(
+        default=None,
+        description="Local non-secret Quantum Lever personalization label.",
+    )
+    quantum_k: int | None = Field(
+        default=None,
+        description="quantum_floor minimum integer-CDF slots per token.",
+    )
+    quantum_recv_timeout: int | None = Field(
+        default=None,
+        description="Quantum Lever API read timeout in milliseconds.",
+    )
 
     repetition_penalty: float | None = None
     seed: int | None = Field(None, ge=_INT64_MIN, le=_INT64_MAX)
@@ -409,6 +438,9 @@ class ResponsesRequest(OpenAIBaseModel):
         extra_args: dict[str, Any] = self.vllm_xargs if self.vllm_xargs else {}
         if self.kv_transfer_params:
             extra_args["kv_transfer_params"] = self.kv_transfer_params
+        quantum_floor, quantum_seed = resolve_quantum_params(
+            self, default_sampling_params
+        )
 
         return SamplingParams.from_optional(
             temperature=temperature,
@@ -431,8 +463,8 @@ class ResponsesRequest(OpenAIBaseModel):
             skip_clone=True,  # Created fresh per request, safe to skip clone
             skip_special_tokens=self.skip_special_tokens,
             include_stop_str_in_output=self.include_stop_str_in_output,
-            quantum_floor=self.quantum_floor,
-            quantum_seed=self.quantum_seed,
+            quantum_floor=quantum_floor,
+            quantum_seed=quantum_seed,
         )
 
     def is_include_output_logprobs(self) -> bool:

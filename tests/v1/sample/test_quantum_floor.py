@@ -26,6 +26,7 @@ from vllm.quantum.quantum_floor import (
     build_allocation,
     compute_g_rows,
     quantum_lever_cache_key,
+    quantum_personalize_word,
     select_token_index,
     spread_u32,
 )
@@ -45,6 +46,7 @@ class EntropyHandler(BaseHTTPRequestHandler):
     entropy = b""
     offset = 0
     requests = []
+    payload_field = "bytes_b64"
 
     def do_GET(self):
         EntropyHandler.requests.append(
@@ -65,9 +67,9 @@ class EntropyHandler(BaseHTTPRequestHandler):
         end = start + requested
         EntropyHandler.offset = end
         payload = {
-            "bytes_b64": base64.b64encode(EntropyHandler.entropy[start:end]).decode(
-                "ascii"
-            )
+            EntropyHandler.payload_field: base64.b64encode(
+                EntropyHandler.entropy[start:end]
+            ).decode("ascii")
         }
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -120,6 +122,7 @@ def test_quantum_lever_client_reads_little_endian_words():
     EntropyHandler.entropy = b"".join(word.to_bytes(4, "little") for word in words)
     EntropyHandler.offset = 0
     EntropyHandler.requests = []
+    EntropyHandler.payload_field = "bytes_b64"
     server = HTTPServer(("127.0.0.1", 0), EntropyHandler)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
@@ -145,10 +148,69 @@ def test_quantum_lever_client_reads_little_endian_words():
     ]
 
 
+def test_quantum_lever_client_uses_llama_compatible_qrng_endpoint():
+    EntropyHandler.entropy = b"\x11\x22\x33\x44"
+    EntropyHandler.offset = 0
+    EntropyHandler.requests = []
+    EntropyHandler.payload_field = "payload_b64"
+    server = HTTPServer(("127.0.0.1", 0), EntropyHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    client = QuantumLeverClient(
+        QuantumSeedParams(
+            api_url=f"http://127.0.0.1:{server.server_port}",
+            api_key="test-key",
+            source="qrng",
+            recv_timeout_ms=1000,
+        )
+    )
+    try:
+        assert client.read_u32() == 0x44332211
+    finally:
+        client.close()
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert EntropyHandler.requests[0]["path"] == "/v1/qrng/latest"
+
+
+def test_quantum_lever_client_uses_llama_compatible_lever_endpoint():
+    EntropyHandler.entropy = b"\x01\x02\x03\x04"
+    EntropyHandler.offset = 0
+    EntropyHandler.requests = []
+    EntropyHandler.payload_field = "payload_b64"
+    server = HTTPServer(("127.0.0.1", 0), EntropyHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    client = QuantumLeverClient(
+        QuantumSeedParams(
+            api_url=f"http://127.0.0.1:{server.server_port}",
+            api_key="test-key",
+            source="lever",
+            recv_timeout_ms=1000,
+        )
+    )
+    try:
+        assert client.read_u32() == 0x04030201
+    finally:
+        client.close()
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert EntropyHandler.requests[0]["path"] == "/v1/lever/latest"
+
+
+def test_quantum_personalization_matches_llama_compatible_reference_values():
+    assert quantum_personalize_word(0x04030201, "", 0) == 0x04030201
+    assert quantum_personalize_word(0x04030201, "alice", 0) == 0x7A920679
+    assert quantum_personalize_word(0x04030201, "alice", 16) == 0xEAA9FC26
+
+
 def test_quantum_cli_check_reads_entropy_and_masks_key(capsys):
     EntropyHandler.entropy = b"\x01\x02\x03\x04"
     EntropyHandler.offset = 0
     EntropyHandler.requests = []
+    EntropyHandler.payload_field = "bytes_b64"
     server = HTTPServer(("127.0.0.1", 0), EntropyHandler)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
@@ -325,6 +387,56 @@ def test_openai_completion_request_maps_quantum_seed():
     assert params.quantum_seed == QuantumSeedParams(api_key="test-key", buffer_size=32)
 
 
+def test_openai_completion_request_maps_llama_compatible_quantum_seed():
+    request = CompletionRequest(
+        prompt="hello",
+        quantum_api_key="test-key",
+        quantum_source="lever",
+        quantum_personalization="label",
+        quantum_recv_timeout=1234,
+    )
+    params = request.to_sampling_params(max_tokens=4)
+    assert params.quantum_seed == QuantumSeedParams(
+        api_key="test-key",
+        source="lever",
+        personalization="label",
+        recv_timeout_ms=1234,
+    )
+
+
+def test_openai_completion_request_maps_llama_compatible_quantum_floor():
+    request = CompletionRequest(
+        prompt="hello",
+        quantum_api_key="test-key",
+        quantum_sampler=True,
+        quantum_k=11,
+    )
+    params = request.to_sampling_params(max_tokens=4)
+    assert params.quantum_floor == QuantumFloorParams(
+        api_key="test-key",
+        k=11,
+    )
+    assert params.quantum_seed is None
+
+
+def test_openai_completion_request_uses_quantum_server_defaults():
+    request = CompletionRequest(prompt="hello")
+    params = request.to_sampling_params(
+        max_tokens=4,
+        default_sampling_params={
+            "quantum_api_key": "test-key",
+            "quantum_source": "lever",
+            "quantum_sampler": True,
+            "quantum_k": 13,
+        },
+    )
+    assert params.quantum_floor == QuantumFloorParams(
+        api_key="test-key",
+        source="lever",
+        k=13,
+    )
+
+
 def test_openai_chat_request_maps_quantum_floor():
     request = ChatCompletionRequest(
         messages=[{"role": "user", "content": "hello"}],
@@ -345,6 +457,19 @@ def test_openai_chat_request_maps_quantum_seed():
     assert params.quantum_seed == QuantumSeedParams(api_key="test-key", buffer_size=32)
 
 
+def test_openai_chat_request_maps_llama_compatible_quantum_seed():
+    request = ChatCompletionRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        quantum_api_key="test-key",
+        quantum_source="qrng",
+    )
+    params = request.to_sampling_params(max_tokens=4, default_sampling_params={})
+    assert params.quantum_seed == QuantumSeedParams(
+        api_key="test-key",
+        source="qrng",
+    )
+
+
 def test_openai_responses_request_maps_quantum_floor():
     request = ResponsesRequest(
         input="hello",
@@ -363,3 +488,19 @@ def test_openai_responses_request_maps_quantum_seed():
     )
     params = request.to_sampling_params(default_max_tokens=4)
     assert params.quantum_seed == QuantumSeedParams(api_key="test-key", buffer_size=32)
+
+
+def test_openai_responses_request_maps_llama_compatible_quantum_floor():
+    request = ResponsesRequest(
+        input="hello",
+        quantum_api_key="test-key",
+        quantum_sampler=True,
+        quantum_source="lever",
+        quantum_k=9,
+    )
+    params = request.to_sampling_params(default_max_tokens=4)
+    assert params.quantum_floor == QuantumFloorParams(
+        api_key="test-key",
+        source="lever",
+        k=9,
+    )

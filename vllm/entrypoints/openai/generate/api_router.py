@@ -64,6 +64,7 @@ async def init_generate_state(
     from vllm.entrypoints.openai.fingerprint import set_default_fingerprint_mode
     from vllm.entrypoints.openai.responses.serving import OpenAIServingResponses
     from vllm.entrypoints.serve.disagg.serving import ServingTokens
+    from vllm.quantum.compat import quantum_defaults_from_args
 
     # Applied before any serving class is constructed so that each one picks
     # up the chosen mode on its first cache miss.
@@ -82,6 +83,7 @@ async def init_generate_state(
     else:
         tool_server = None
     resolved_chat_template = load_chat_template(args.chat_template)
+    quantum_defaults = quantum_defaults_from_args(args)
 
     # Render endpoints are always backed by OpenAIServingRender so that
     # /v1/chat/completions/render and /v1/completions/render work on both
@@ -151,6 +153,15 @@ async def init_generate_state(
         if "generate" in supported_tasks
         else None
     )
+    for serving in (
+        state.openai_serving_render,
+        state.openai_serving_responses,
+        state.openai_serving_chat,
+        state.openai_serving_chat_batch,
+        state.openai_serving_completion,
+    ):
+        if serving is not None and quantum_defaults:
+            serving.default_sampling_params.update(quantum_defaults)
     state.anthropic_serving_messages = (
         AnthropicServingMessages(
             engine_client,

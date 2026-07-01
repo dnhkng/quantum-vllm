@@ -15,7 +15,7 @@ logger = init_logger(__name__)
 
 
 def _is_quantum_api_check(argv: list[str]) -> bool:
-    return "--quantum-api-key" in argv
+    return bool(argv) and argv[0].startswith("--quantum-")
 
 
 def main():

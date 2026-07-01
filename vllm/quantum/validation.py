@@ -30,6 +30,12 @@ def verify_quantum_seed_args(
             parameter="quantum_seed.api_key",
             value=qs.api_key,
         )
+    if qs.source not in ("qrng", "lever"):
+        raise VLLMValidationError(
+            "quantum_seed.source must be 'qrng' or 'lever'.",
+            parameter="quantum_seed.source",
+            value=qs.source,
+        )
     if qs.buffer_size < 4:
         raise VLLMValidationError(
             "quantum_seed.buffer_size must be >= 4.",
@@ -86,6 +92,12 @@ def verify_quantum_floor_args(
             "quantum_floor.api_key must be non-empty.",
             parameter="quantum_floor.api_key",
             value=qf.api_key,
+        )
+    if qf.source not in ("qrng", "lever"):
+        raise VLLMValidationError(
+            "quantum_floor.source must be 'qrng' or 'lever'.",
+            parameter="quantum_floor.source",
+            value=qf.source,
         )
     if qf.k < 1:
         raise VLLMValidationError(

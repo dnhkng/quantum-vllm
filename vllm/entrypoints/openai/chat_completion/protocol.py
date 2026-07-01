@@ -34,6 +34,7 @@ from vllm.entrypoints.openai.engine.protocol import (
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
+from vllm.quantum.compat import resolve_quantum_params
 from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
 from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
@@ -235,6 +236,34 @@ class ChatCompletionRequest(OpenAIBaseModel):
     quantum_seed: QuantumSeedParams | None = Field(
         default=None,
         description="Quantum Lever-backed per-request PRNG seed parameters.",
+    )
+    quantum_api_key: str | None = Field(
+        default=None,
+        description="Quantum Lever API bearer key.",
+    )
+    quantum_api_url: str | None = Field(
+        default=None,
+        description="Quantum Lever API base URL.",
+    )
+    quantum_source: Literal["qrng", "lever"] | None = Field(
+        default=None,
+        description="Quantum Lever entropy source.",
+    )
+    quantum_sampler: bool | None = Field(
+        default=None,
+        description="Use the subscriber-only quantum_floor sampler.",
+    )
+    quantum_personalization: str | None = Field(
+        default=None,
+        description="Local non-secret Quantum Lever personalization label.",
+    )
+    quantum_k: int | None = Field(
+        default=None,
+        description="quantum_floor minimum integer-CDF slots per token.",
+    )
+    quantum_recv_timeout: int | None = Field(
+        default=None,
+        description="Quantum Lever API read timeout in milliseconds.",
     )
     include_reasoning: bool = True
     parallel_tool_calls: bool | None = True
@@ -621,6 +650,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
         if self.kv_transfer_params:
             # Pass in kv_transfer_params via extra_args
             extra_args["kv_transfer_params"] = self.kv_transfer_params
+        quantum_floor, quantum_seed = resolve_quantum_params(
+            self, default_sampling_params
+        )
         return SamplingParams.from_optional(
             n=self.n,
             presence_penalty=self.presence_penalty,
@@ -652,8 +684,8 @@ class ChatCompletionRequest(OpenAIBaseModel):
             extra_args=extra_args or None,
             skip_clone=True,  # Created fresh per request, safe to skip clone
             repetition_detection=self.repetition_detection,
-            quantum_floor=self.quantum_floor,
-            quantum_seed=self.quantum_seed,
+            quantum_floor=quantum_floor,
+            quantum_seed=quantum_seed,
         )
 
     @model_validator(mode="before")

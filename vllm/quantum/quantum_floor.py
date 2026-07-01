@@ -141,13 +141,12 @@ def quantum_lever_cache_key(params: QuantumLeverParams) -> tuple[object, ...]:
         for name in (
             "api_url",
             "api_key",
+            "source",
+            "personalization",
             "buffer_size",
             "recv_timeout_ms",
             "k",
             "require_full_vocab",
-            "debug_tax",
-            "debug_samples",
-            "log_path",
         )
         if hasattr(params, name)
     )
@@ -157,6 +156,7 @@ class QuantumLeverClient:
     def __init__(self, params: QuantumLeverParams):
         self._params = params
         self._bytes: deque[int] = deque()
+        self._words_produced = 0
 
     def read_u32(self) -> int:
         while len(self._bytes) < 4:
@@ -165,13 +165,17 @@ class QuantumLeverClient:
         value = 0
         for shift in range(0, 32, 8):
             value |= self._bytes.popleft() << shift
-        return value
+        word_index = self._words_produced
+        self._words_produced += 1
+        return quantum_personalize_word(
+            value, getattr(self._params, "personalization", ""), word_index
+        )
 
     def close(self) -> None:
         self._bytes.clear()
 
     def _refill(self) -> None:
-        url = self._snapshot_url()
+        url = self._entropy_url()
         request = urllib.request.Request(
             url,
             headers={
@@ -197,13 +201,13 @@ class QuantumLeverClient:
 
         try:
             payload = json.loads(body)
-            encoded = payload["bytes_b64"]
+            encoded = payload.get("payload_b64", payload.get("bytes_b64"))
             if not isinstance(encoded, str):
-                raise TypeError("bytes_b64 must be a string")
+                raise TypeError("payload_b64 or bytes_b64 must be a string")
             decoded = base64.b64decode(encoded, validate=True)
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(
-                "quantum_floor Quantum Lever response missing valid bytes_b64"
+                "quantum_floor Quantum Lever response missing valid entropy payload"
             ) from exc
 
         if not decoded:
@@ -212,8 +216,24 @@ class QuantumLeverClient:
             )
         self._bytes.extend(decoded)
 
-    def _snapshot_url(self) -> str:
+    def _entropy_url(self) -> str:
         parsed = urllib.parse.urlsplit(self._params.api_url)
+        if parsed.path not in ("", "/"):
+            return self._snapshot_url(parsed)
+
+        source = getattr(self._params, "source", "qrng")
+        if source == "lever":
+            path = "/v1/lever/latest"
+        elif source in ("", "qrng"):
+            path = "/v1/qrng/latest"
+        else:
+            raise RuntimeError("quantum: --quantum-source must be 'qrng' or 'lever'")
+
+        return urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+        )
+
+    def _snapshot_url(self, parsed: urllib.parse.SplitResult) -> str:
         query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
         query.append(("bytes", str(max(4, self._params.buffer_size))))
         return urllib.parse.urlunsplit(
@@ -225,3 +245,79 @@ class QuantumLeverClient:
                 parsed.fragment,
             )
         )
+
+
+def quantum_personalize_word(
+    word: int, personalization: str, word_index: int
+) -> int:
+    if not personalization:
+        return word & QUANTUM_FLOOR_MASK
+    key = _quantum_personalization_key(personalization)
+    block = _quantum_chacha20_block(key, word_index // 16)
+    return (word ^ block[word_index % 16]) & QUANTUM_FLOOR_MASK
+
+
+def _quantum_personalization_key(personalization: str) -> tuple[int, ...]:
+    words: list[int] = []
+    for i in range(4):
+        h = _quantum_fnv1a64(
+            personalization, 0x9E3779B97F4A7C15 * (i + 1)
+        )
+        words.append(h & QUANTUM_FLOOR_MASK)
+        words.append((h >> 32) & QUANTUM_FLOOR_MASK)
+    return tuple(words)
+
+
+def _quantum_fnv1a64(text: str, seed: int) -> int:
+    value = (0xCBF29CE484222325 ^ seed) & 0xFFFFFFFFFFFFFFFF
+    for byte in text.encode("utf-8"):
+        value ^= byte
+        value = (value * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return value
+
+
+def _quantum_chacha20_block(key: tuple[int, ...], counter: int) -> tuple[int, ...]:
+    block = [
+        0x61707865,
+        0x3320646E,
+        0x79622D32,
+        0x6B206574,
+        *key,
+        counter & QUANTUM_FLOOR_MASK,
+        0,
+        0,
+        0,
+    ]
+    out = block.copy()
+    for _ in range(10):
+        _quantum_chacha_quarter_round(out, 0, 4, 8, 12)
+        _quantum_chacha_quarter_round(out, 1, 5, 9, 13)
+        _quantum_chacha_quarter_round(out, 2, 6, 10, 14)
+        _quantum_chacha_quarter_round(out, 3, 7, 11, 15)
+        _quantum_chacha_quarter_round(out, 0, 5, 10, 15)
+        _quantum_chacha_quarter_round(out, 1, 6, 11, 12)
+        _quantum_chacha_quarter_round(out, 2, 7, 8, 13)
+        _quantum_chacha_quarter_round(out, 3, 4, 9, 14)
+    return tuple((out[i] + block[i]) & QUANTUM_FLOOR_MASK for i in range(16))
+
+
+def _quantum_chacha_quarter_round(
+    state: list[int], a: int, b: int, c: int, d: int
+) -> None:
+    state[a] = (state[a] + state[b]) & QUANTUM_FLOOR_MASK
+    state[d] ^= state[a]
+    state[d] = _quantum_rotl32(state[d], 16)
+    state[c] = (state[c] + state[d]) & QUANTUM_FLOOR_MASK
+    state[b] ^= state[c]
+    state[b] = _quantum_rotl32(state[b], 12)
+    state[a] = (state[a] + state[b]) & QUANTUM_FLOOR_MASK
+    state[d] ^= state[a]
+    state[d] = _quantum_rotl32(state[d], 8)
+    state[c] = (state[c] + state[d]) & QUANTUM_FLOOR_MASK
+    state[b] ^= state[c]
+    state[b] = _quantum_rotl32(state[b], 7)
+
+
+def _quantum_rotl32(value: int, shift: int) -> int:
+    value &= QUANTUM_FLOOR_MASK
+    return ((value << shift) | (value >> (32 - shift))) & QUANTUM_FLOOR_MASK

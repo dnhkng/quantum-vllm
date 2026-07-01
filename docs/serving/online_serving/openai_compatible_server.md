@@ -169,14 +169,25 @@ The following extra parameters are supported:
 
 #### Quantum Lever Sampling
 
-This fork installs the CLI as `quantum-vllm` rather than `vllm`. To smoke-test
-Quantum Lever credentials before starting a server, run
-`quantum-vllm --quantum-api-key YOUR_QUANTUM_LEVER_API_KEY`.
+This fork installs the CLI as `quantum-vllm` rather than `vllm`. Its Quantum
+Lever flags match `quantum-llama-server` for the non-debug options:
+`--quantum-api-key`, `--quantum-api-url`, `--quantum-source`,
+`--quantum-sampler`, `--quantum-personalization`, `--quantum-k`, and
+`--quantum-recv-timeout`. To smoke-test Quantum Lever credentials before
+starting a server, run:
+
+```bash
+quantum-vllm --quantum-api-key YOUR_QUANTUM_LEVER_API_KEY
+```
 
 The `quantum_floor` and `quantum_seed` request parameters enable Quantum
 Lever-backed sampling for `/v1/completions`, `/v1/chat/completions`, and
-`/v1/responses`. The implementation lives under `vllm/quantum/`; the serving
-and sampler paths only import the request parameters and entropy reader.
+`/v1/responses`. Those endpoints also accept `quantum-llama-server` style flat
+JSON fields: `quantum_api_key`, `quantum_api_url`, `quantum_source`,
+`quantum_sampler`, `quantum_personalization`, `quantum_k`, and
+`quantum_recv_timeout`. The implementation lives under `vllm/quantum/`; the
+serving and sampler paths only import the request parameters and entropy
+reader.
 
 `quantum_floor` samples from the full vocabulary using entropy snapshots from
 the Quantum Lever API. It requires non-greedy sampling with truncation and
@@ -196,13 +207,12 @@ Example request fragment:
   "top_k": 0,
   "top_p": 1.0,
   "min_p": 0.0,
-  "quantum_floor": {
-    "api_key": "YOUR_QUANTUM_LEVER_API_KEY",
-    "api_url": "https://quantumlever.stream/v1/entropy/snapshot",
-    "k": 64,
-    "buffer_size": 256,
-    "recv_timeout_ms": 2000
-  }
+  "quantum_api_key": "YOUR_QUANTUM_LEVER_API_KEY",
+  "quantum_api_url": "https://quantumlever.stream",
+  "quantum_source": "qrng",
+  "quantum_sampler": true,
+  "quantum_k": 64,
+  "quantum_recv_timeout": 2000
 }
 ```
 

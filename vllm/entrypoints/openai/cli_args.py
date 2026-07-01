@@ -26,6 +26,7 @@ from vllm.entrypoints.constants import (
 )
 from vllm.entrypoints.openai.models.protocol import LoRAModulePath
 from vllm.logger import init_logger
+from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
 from vllm.tool_parsers import ToolParserManager
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
@@ -168,6 +169,20 @@ class BaseFrontendArgs:
     """
     fingerprint_value: str | None = None
     """Literal fingerprint string used when ``--fingerprint-mode=custom``."""
+    quantum_api_key: str | None = None
+    """Use Quantum Lever entropy with bearer key."""
+    quantum_api_url: str = QuantumSeedParams.api_url
+    """Quantum Lever API base URL."""
+    quantum_source: Literal["qrng", "lever"] = QuantumSeedParams.source
+    """Quantum Lever entropy source."""
+    quantum_sampler: bool = False
+    """Use the subscriber-only quantum_floor sampler."""
+    quantum_personalization: str = ""
+    """Personalize Quantum Lever entropy locally with a non-secret ChaCha20 label."""
+    quantum_k: int = QuantumFloorParams.k
+    """quantum_floor minimum integer-CDF slots per token."""
+    quantum_recv_timeout: int = QuantumSeedParams.recv_timeout_ms
+    """Quantum Lever API read timeout in milliseconds."""
 
     @classmethod
     def _customize_cli_kwargs(
