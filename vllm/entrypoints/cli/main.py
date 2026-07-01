@@ -14,7 +14,21 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
+def _is_quantum_api_check(argv: list[str]) -> bool:
+    return "--quantum-api-key" in argv
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] in ("-v", "--version"):
+        print(importlib.metadata.version("vllm"))
+        return
+
+    if _is_quantum_api_check(sys.argv[1:]):
+        from vllm.quantum.cli import run_quantum_api_check_from_argv
+
+        run_quantum_api_check_from_argv(sys.argv[1:])
+        return
+
     import vllm.entrypoints.cli.benchmark.main
     import vllm.entrypoints.cli.collect_env
     import vllm.entrypoints.cli.launch
@@ -22,6 +36,7 @@ def main():
     import vllm.entrypoints.cli.run_batch
     import vllm.entrypoints.cli.serve
     from vllm.entrypoints.utils import VLLM_SUBCMD_PARSER_EPILOG, cli_env_setup
+    from vllm.quantum.cli import add_quantum_cli_args, maybe_run_quantum_api_check
     from vllm.utils.argparse_utils import FlexibleArgumentParser
 
     CMD_MODULES = [
@@ -68,7 +83,7 @@ def main():
                 )
 
         parser = FlexibleArgumentParser(
-            description="vLLM CLI",
+            description="quantum-vLLM CLI",
             epilog=VLLM_SUBCMD_PARSER_EPILOG.format(subcmd="[subcommand]"),
         )
         parser.add_argument(
@@ -77,6 +92,7 @@ def main():
             action="version",
             version=importlib.metadata.version("vllm"),
         )
+        add_quantum_cli_args(parser)
         subparsers = parser.add_subparsers(required=False, dest="subparser")
         cmds = {}
         for cmd_module in CMD_MODULES:
@@ -87,6 +103,9 @@ def main():
         args = parser.parse_args()
         if args.subparser in cmds:
             cmds[args.subparser].validate(args)
+
+        if maybe_run_quantum_api_check(args):
+            return
 
         if hasattr(args, "dispatch_function"):
             args.dispatch_function(args)

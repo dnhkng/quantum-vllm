@@ -169,6 +169,10 @@ The following extra parameters are supported:
 
 #### Quantum Lever Sampling
 
+This fork installs the CLI as `quantum-vllm` rather than `vllm`. To smoke-test
+Quantum Lever credentials before starting a server, run
+`quantum-vllm --quantum-api-key YOUR_QUANTUM_LEVER_API_KEY`.
+
 The `quantum_floor` and `quantum_seed` request parameters enable Quantum
 Lever-backed sampling for `/v1/completions`, `/v1/chat/completions`, and
 `/v1/responses`. The implementation lives under `vllm/quantum/`; the serving

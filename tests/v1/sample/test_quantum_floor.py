@@ -4,6 +4,7 @@
 import base64
 import json
 import threading
+from argparse import Namespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from random import Random
 from urllib.parse import parse_qs, urlsplit
@@ -16,6 +17,7 @@ from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionReque
 from vllm.entrypoints.openai.completion.protocol import CompletionRequest
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.exceptions import VLLMValidationError
+from vllm.quantum.cli import maybe_run_quantum_api_check
 from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
 from vllm.quantum.quantum_floor import (
     QUANTUM_FLOOR_M,
@@ -141,6 +143,32 @@ def test_quantum_lever_client_reads_little_endian_words():
     assert parse_qs(urlsplit(EntropyHandler.requests[0]["path"]).query)["bytes"] == [
         "16"
     ]
+
+
+def test_quantum_cli_check_reads_entropy_and_masks_key(capsys):
+    EntropyHandler.entropy = b"\x01\x02\x03\x04"
+    EntropyHandler.offset = 0
+    EntropyHandler.requests = []
+    server = HTTPServer(("127.0.0.1", 0), EntropyHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        args = Namespace(
+            quantum_api_key="test-key",
+            quantum_api_url=f"http://127.0.0.1:{server.server_port}/entropy",
+            quantum_buffer_size=4,
+            quantum_recv_timeout=1000,
+        )
+        assert maybe_run_quantum_api_check(args)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    out = capsys.readouterr().out
+    assert "Quantum Lever API check passed" in out
+    assert "0x04030201" in out
+    assert "test-key" not in out
+    assert EntropyHandler.requests[0]["authorization"] == "Bearer test-key"
 
 
 def test_sampler_quantum_floor_branch_replaces_only_qrng_rows():
