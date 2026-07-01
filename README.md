@@ -1,4 +1,33 @@
 <!-- markdownlint-disable MD001 MD041 -->
+# quantum-vllm
+
+`quantum-vllm` is a fork of `vllm` focused on using live quantum entropy during
+LLM inference and OpenAI-compatible serving.
+
+## Philosophy
+
+This project leans into the Many Worlds Interpretation (MWI) of quantum
+mechanics. By using this fork, selected sampling paths can replace local
+pseudorandom draws with entropy from Quantum Lever's QRNG service.
+
+`quantum_seed` reads a Quantum Lever entropy word and uses it as the
+per-request sampler seed. `quantum_floor` uses live Quantum Lever entropy as the
+final token draw over the full vocabulary with a configurable probability
+floor.
+
+This fork installs the CLI as `quantum-vllm` rather than `vllm`. You can
+smoke-test a Quantum Lever key with:
+
+```bash
+quantum-vllm --quantum-api-key YOUR_QUANTUM_LEVER_API_KEY
+```
+
+This fork tracks upstream `vllm`, but is not intended to be merged upstream.
+
+---
+
+# Upstream vLLM
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
