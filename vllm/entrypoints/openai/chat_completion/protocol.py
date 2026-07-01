@@ -34,11 +34,10 @@ from vllm.entrypoints.openai.engine.protocol import (
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
+from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
 from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
     BeamSearchParams,
-    QuantumFloorParams,
-    QuantumSeedParams,
     RepetitionDetectionParams,
     RequestOutputKind,
     SamplingParams,

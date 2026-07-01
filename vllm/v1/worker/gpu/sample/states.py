@@ -3,12 +3,12 @@
 import numpy as np
 import torch
 
+from vllm.quantum.quantum_floor import QuantumLeverClient
 from vllm.sampling_params import SamplingParams
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p
 from vllm.v1.worker.gpu.buffer_utils import UvaBackedTensor
 from vllm.v1.worker.gpu.sample.gumbel import apply_temperature
 from vllm.v1.worker.gpu.sample.min_p import apply_min_p
-from vllm.v1.worker.gpu.sample.quantum_floor import QuantumLeverClient
 
 NO_LOGPROBS = -1
 _NP_INT64_MIN = np.iinfo(np.int64).min

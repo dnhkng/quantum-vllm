@@ -171,7 +171,8 @@ The following extra parameters are supported:
 
 The `quantum_floor` and `quantum_seed` request parameters enable Quantum
 Lever-backed sampling for `/v1/completions`, `/v1/chat/completions`, and
-`/v1/responses`.
+`/v1/responses`. The implementation lives under `vllm/quantum/`; the serving
+and sampler paths only import the request parameters and entropy reader.
 
 `quantum_floor` samples from the full vocabulary using entropy snapshots from
 the Quantum Lever API. It requires non-greedy sampling with truncation and

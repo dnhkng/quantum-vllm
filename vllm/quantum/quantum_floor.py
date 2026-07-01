@@ -16,7 +16,7 @@ from typing import Protocol
 
 import numpy as np
 
-from vllm.sampling_params import QuantumFloorParams, QuantumSeedParams
+from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
 
 QUANTUM_FLOOR_M = 1 << 32
 QUANTUM_FLOOR_MASK = QUANTUM_FLOOR_M - 1

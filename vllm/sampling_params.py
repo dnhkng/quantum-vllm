@@ -17,6 +17,12 @@ import vllm.envs as envs
 from vllm.config import ModelConfig, SpeculativeConfig, StructuredOutputsConfig
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
+from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
+from vllm.quantum.validation import (
+    validate_quantum_floor_model,
+    verify_quantum_floor_args,
+    verify_quantum_seed_args,
+)
 from vllm.tokenizers import TokenizerLike
 from vllm.utils.mistral import is_mistral_tokenizer
 from vllm.v1.serial_utils import PydanticMsgspecMixin
@@ -176,31 +182,6 @@ class RepetitionDetectionParams:
                 "in engine output. If you do not wish to detect repetitive "
                 "patterns, set max_pattern_size to 0."
             )
-
-
-@dataclass
-class QuantumFloorParams:
-    """Parameters for Quantum Lever-backed quantum-floor sampling."""
-
-    api_url: str = "https://quantumlever.stream/v1/entropy/snapshot"
-    api_key: str = field(default="", repr=False)
-    k: int = 64
-    buffer_size: int = 256
-    recv_timeout_ms: int = 2000
-    require_full_vocab: bool = True
-    debug_tax: bool = False
-    debug_samples: bool = False
-    log_path: str = ""
-
-
-@dataclass
-class QuantumSeedParams:
-    """Parameters for Quantum Lever-backed per-request PRNG seeding."""
-
-    api_url: str = "https://quantumlever.stream/v1/entropy/snapshot"
-    api_key: str = field(default="", repr=False)
-    buffer_size: int = 256
-    recv_timeout_ms: int = 2000
 
 
 class RequestOutputKind(Enum):
@@ -619,148 +600,27 @@ class SamplingParams(
             )
 
     def _verify_quantum_seed_args(self) -> None:
-        if self.quantum_seed is None:
-            return
-
-        qs = self.quantum_seed
-        if not qs.api_url:
-            raise VLLMValidationError(
-                "quantum_seed.api_url must be non-empty.",
-                parameter="quantum_seed.api_url",
-                value=qs.api_url,
-            )
-        if not qs.api_key:
-            raise VLLMValidationError(
-                "quantum_seed.api_key must be non-empty.",
-                parameter="quantum_seed.api_key",
-                value=qs.api_key,
-            )
-        if qs.buffer_size < 4:
-            raise VLLMValidationError(
-                "quantum_seed.buffer_size must be >= 4.",
-                parameter="quantum_seed.buffer_size",
-                value=qs.buffer_size,
-            )
-        if qs.recv_timeout_ms <= 0:
-            raise VLLMValidationError(
-                "quantum_seed.recv_timeout_ms must be positive.",
-                parameter="quantum_seed.recv_timeout_ms",
-                value=qs.recv_timeout_ms,
-            )
-        if self.seed is not None:
-            raise VLLMValidationError(
-                "quantum_seed cannot be used with an explicit seed.",
-                parameter="seed",
-                value=self.seed,
-            )
-        if self.quantum_floor is not None:
-            raise VLLMValidationError(
-                "quantum_seed cannot be used with quantum_floor.",
-                parameter="quantum_seed",
-                value=qs,
-            )
+        verify_quantum_seed_args(
+            self.quantum_seed,
+            seed=self.seed,
+            quantum_floor=self.quantum_floor,
+        )
 
     def _verify_quantum_floor_args(self) -> None:
-        if self.quantum_floor is None:
-            return
-
-        qf = self.quantum_floor
-        if not qf.api_url:
-            raise VLLMValidationError(
-                "quantum_floor.api_url must be non-empty.",
-                parameter="quantum_floor.api_url",
-                value=qf.api_url,
-            )
-        if not qf.api_key:
-            raise VLLMValidationError(
-                "quantum_floor.api_key must be non-empty.",
-                parameter="quantum_floor.api_key",
-                value=qf.api_key,
-            )
-        if qf.k < 1:
-            raise VLLMValidationError(
-                "quantum_floor.k must be >= 1.",
-                parameter="quantum_floor.k",
-                value=qf.k,
-            )
-        if not qf.require_full_vocab:
-            raise VLLMValidationError(
-                "quantum_floor.require_full_vocab must be true.",
-                parameter="quantum_floor.require_full_vocab",
-                value=qf.require_full_vocab,
-            )
-        if qf.buffer_size < 4:
-            raise VLLMValidationError(
-                "quantum_floor.buffer_size must be >= 4.",
-                parameter="quantum_floor.buffer_size",
-                value=qf.buffer_size,
-            )
-        if qf.recv_timeout_ms <= 0:
-            raise VLLMValidationError(
-                "quantum_floor.recv_timeout_ms must be positive.",
-                parameter="quantum_floor.recv_timeout_ms",
-                value=qf.recv_timeout_ms,
-            )
-        if self.temperature < _SAMPLING_EPS:
-            raise VLLMValidationError(
-                "quantum_floor requires temperature > 0.",
-                parameter="temperature",
-                value=self.temperature,
-            )
-        if self.top_k not in (0, -1):
-            raise VLLMValidationError(
-                "quantum_floor requires top_k to be disabled.",
-                parameter="top_k",
-                value=self.top_k,
-            )
-        if self.top_p != 1.0:
-            raise VLLMValidationError(
-                "quantum_floor requires top_p == 1.0.",
-                parameter="top_p",
-                value=self.top_p,
-            )
-        if self.min_p != 0.0:
-            raise VLLMValidationError(
-                "quantum_floor requires min_p == 0.0.",
-                parameter="min_p",
-                value=self.min_p,
-            )
-        if self.ignore_eos:
-            raise VLLMValidationError(
-                "quantum_floor is incompatible with ignore_eos.",
-                parameter="ignore_eos",
-                value=self.ignore_eos,
-            )
-        if self.min_tokens != 0:
-            raise VLLMValidationError(
-                "quantum_floor is incompatible with min_tokens.",
-                parameter="min_tokens",
-                value=self.min_tokens,
-            )
-        if self.structured_outputs is not None:
-            raise VLLMValidationError(
-                "quantum_floor is incompatible with structured_outputs.",
-                parameter="structured_outputs",
-                value=self.structured_outputs,
-            )
-        if self.allowed_token_ids:
-            raise VLLMValidationError(
-                "quantum_floor is incompatible with allowed_token_ids.",
-                parameter="allowed_token_ids",
-                value=self.allowed_token_ids,
-            )
-        if self.logit_bias:
-            raise VLLMValidationError(
-                "quantum_floor is incompatible with logit_bias.",
-                parameter="logit_bias",
-                value=self.logit_bias,
-            )
-        if self.bad_words:
-            raise VLLMValidationError(
-                "quantum_floor is incompatible with bad_words.",
-                parameter="bad_words",
-                value=self.bad_words,
-            )
+        verify_quantum_floor_args(
+            self.quantum_floor,
+            temperature=self.temperature,
+            top_k=self.top_k,
+            top_p=self.top_p,
+            min_p=self.min_p,
+            ignore_eos=self.ignore_eos,
+            min_tokens=self.min_tokens,
+            structured_outputs=self.structured_outputs,
+            allowed_token_ids=self.allowed_token_ids,
+            logit_bias=self.logit_bias,
+            bad_words=self.bad_words,
+            sampling_eps=_SAMPLING_EPS,
+        )
 
     def _verify_greedy_sampling(self) -> None:
         if self.n > 1:
@@ -1010,21 +870,11 @@ class SamplingParams(
         model_config: ModelConfig,
         speculative_config: SpeculativeConfig | None,
     ) -> None:
-        if self.quantum_floor is None:
-            return
-        if speculative_config is not None:
-            raise VLLMValidationError(
-                "quantum_floor is incompatible with speculative decoding.",
-                parameter="quantum_floor",
-                value=self.quantum_floor,
-            )
-        vocab_size = model_config.get_vocab_size()
-        if self.quantum_floor.k * vocab_size > 2**32:
-            raise VLLMValidationError(
-                "quantum_floor.k * vocab_size exceeds the 2^32 address space.",
-                parameter="quantum_floor.k",
-                value=self.quantum_floor.k,
-            )
+        validate_quantum_floor_model(
+            self.quantum_floor,
+            model_config=model_config,
+            speculative_config=speculative_config,
+        )
 
     def _validate_structured_outputs(
         self,

@@ -16,8 +16,8 @@ from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionReque
 from vllm.entrypoints.openai.completion.protocol import CompletionRequest
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.exceptions import VLLMValidationError
-from vllm.sampling_params import QuantumFloorParams, QuantumSeedParams, SamplingParams
-from vllm.v1.worker.gpu.sample.quantum_floor import (
+from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
+from vllm.quantum.quantum_floor import (
     QUANTUM_FLOOR_M,
     QUANTUM_FLOOR_MASK,
     QuantumLeverClient,
@@ -27,6 +27,7 @@ from vllm.v1.worker.gpu.sample.quantum_floor import (
     select_token_index,
     spread_u32,
 )
+from vllm.sampling_params import SamplingParams
 from vllm.v1.worker.gpu.sample.sampler import Sampler
 
 

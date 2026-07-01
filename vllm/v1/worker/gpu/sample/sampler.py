@@ -6,6 +6,12 @@ import torch
 
 import vllm.envs as envs
 from vllm.config.model import LogprobsMode
+from vllm.quantum.quantum_floor import (
+    QRNGSource,
+    QuantumLeverClient,
+    quantum_lever_cache_key,
+    select_token_index,
+)
 from vllm.sampling_params import SamplingParams
 from vllm.v1.worker.gpu.input_batch import InputBatch
 from vllm.v1.worker.gpu.metrics.logits import get_num_nans
@@ -18,12 +24,6 @@ from vllm.v1.worker.gpu.sample.logprob import (
 )
 from vllm.v1.worker.gpu.sample.output import SamplerOutput
 from vllm.v1.worker.gpu.sample.penalties import PenaltiesState
-from vllm.v1.worker.gpu.sample.quantum_floor import (
-    QRNGSource,
-    QuantumLeverClient,
-    quantum_lever_cache_key,
-    select_token_index,
-)
 from vllm.v1.worker.gpu.sample.states import NO_LOGPROBS, SamplingStates
 from vllm.v1.worker.gpu.states import RequestState
 

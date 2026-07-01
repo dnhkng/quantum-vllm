@@ -63,10 +63,9 @@ from vllm.entrypoints.chat_utils import (
 from vllm.entrypoints.openai.engine.protocol import OpenAIBaseModel
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
+from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
 from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
-    QuantumFloorParams,
-    QuantumSeedParams,
     RequestOutputKind,
     SamplingParams,
     StructuredOutputsParams,
