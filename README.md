@@ -1,26 +1,18 @@
 <!-- markdownlint-disable MD001 MD041 -->
 # quantum-vllm
 
-`quantum-vllm` is a fork of `vllm` focused on using live quantum entropy during
-LLM inference and OpenAI-compatible serving.
+`quantum-vllm` is a fork of `vllm` focused on using live quantum entropy during local and OpenAI-compatible LLM inference.
 
 ## Philosophy
+This project leans hard into the [Many Worlds Interpretation](https://en.wikipedia.org/wiki/Many-worlds_interpretation) (**MWI**) of quantum mechanics, an interpretation held by a sizable proportion of physicists. Among the "[Yes, I think MWI is true](https://anthropic-principle.com/preprints/manyworlds)" crowd are Stephen Hawking and Nobel laureates Murray Gell-Mann and Richard Feynman.
 
-This project leans hard into the [Many Worlds Interpretation](https://en.wikipedia.org/wiki/Many-worlds_interpretation)
-(MWI) of quantum mechanics, an interpretation held by a sizable proportion of
-physicists. Among the ["Yes, I think MWI is true"](https://www.anthropic-principle.com/preprints/manyworlds.html)
-crowd are Stephen Hawking and Nobel laureates Murray Gell-Mann and Richard
-Feynman.
+**Put simply**: by using this `vllm` fork, selected sampling paths can replace the random number generator (RNG) in your computer with a stream of quantum RNG. Under MWI, *each token you see generated is in a new world*, ***and all possible worlds are generated***.
 
-Put simply: by using this `vllm` fork, selected sampling paths can replace local
-pseudorandom draws with entropy from Quantum Lever's QRNG service. Under MWI,
-each token you see generated is in a new world, and all possible worlds are
-generated.
+Read more about this at [Quantum Lever](https://quantumlever.stream/about).
 
-`quantum_seed` reads a Quantum Lever entropy word and uses it as the
-per-request sampler seed. `quantum_floor` uses live Quantum Lever entropy as the
-final token draw over the full vocabulary with a configurable probability
-floor.
+Standard vLLM samplers can use Quantum Lever QRNG entropy as their final draw, while subscriber keys can also enable the experimental Quantum Sampler path.
+
+Free Quantum entropy is provided by [Quantum Lever](https://quantumlever.stream).
 
 This fork installs the CLI as `quantum-vllm` rather than `vllm`. You can
 smoke-test a Quantum Lever key with:
@@ -36,7 +28,7 @@ quantum-vllm --quantum-api-key YOUR_QUANTUM_LEVER_API_KEY
 
 This fork tracks upstream `vllm`, but is not intended to be merged upstream.
 
----
+----
 
 # Upstream vLLM
 
