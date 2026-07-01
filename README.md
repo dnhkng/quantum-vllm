@@ -6,9 +6,16 @@ LLM inference and OpenAI-compatible serving.
 
 ## Philosophy
 
-This project leans into the Many Worlds Interpretation (MWI) of quantum
-mechanics. By using this fork, selected sampling paths can replace local
-pseudorandom draws with entropy from Quantum Lever's QRNG service.
+This project leans hard into the [Many Worlds Interpretation](https://en.wikipedia.org/wiki/Many-worlds_interpretation)
+(MWI) of quantum mechanics, an interpretation held by a sizable proportion of
+physicists. Among the ["Yes, I think MWI is true"](https://www.anthropic-principle.com/preprints/manyworlds.html)
+crowd are Stephen Hawking and Nobel laureates Murray Gell-Mann and Richard
+Feynman.
+
+Put simply: by using this `vllm` fork, selected sampling paths can replace local
+pseudorandom draws with entropy from Quantum Lever's QRNG service. Under MWI,
+each token you see generated is in a new world, and all possible worlds are
+generated.
 
 `quantum_seed` reads a Quantum Lever entropy word and uses it as the
 per-request sampler seed. `quantum_floor` uses live Quantum Lever entropy as the
