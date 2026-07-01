@@ -183,7 +183,7 @@ class QuantumFloorParams:
     """Parameters for Quantum Lever-backed quantum-floor sampling."""
 
     api_url: str = "https://quantumlever.stream/v1/entropy/snapshot"
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     k: int = 64
     buffer_size: int = 256
     recv_timeout_ms: int = 2000
@@ -198,7 +198,7 @@ class QuantumSeedParams:
     """Parameters for Quantum Lever-backed per-request PRNG seeding."""
 
     api_url: str = "https://quantumlever.stream/v1/entropy/snapshot"
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     buffer_size: int = 256
     recv_timeout_ms: int = 2000
 
@@ -376,9 +376,9 @@ class SamplingParams(
     '\\emoji \\emoji \\emoji ...'). This feature can detect such behavior
     and terminate early, saving time and tokens."""
     quantum_floor: QuantumFloorParams | None = None
-    """QRNG-backed full-vocabulary quantum-floor sampling parameters."""
+    """Quantum Lever-backed full-vocabulary quantum-floor sampling parameters."""
     quantum_seed: QuantumSeedParams | None = None
-    """Read one QRNG word and use it as this request's sampler seed."""
+    """Read one Quantum Lever word and use it as this request's sampler seed."""
 
     @staticmethod
     def from_optional(

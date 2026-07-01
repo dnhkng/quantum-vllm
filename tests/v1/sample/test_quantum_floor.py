@@ -23,6 +23,7 @@ from vllm.v1.worker.gpu.sample.quantum_floor import (
     QuantumLeverClient,
     build_allocation,
     compute_g_rows,
+    quantum_lever_cache_key,
     select_token_index,
     spread_u32,
 )
@@ -150,17 +151,7 @@ def test_sampler_quantum_floor_branch_replaces_only_qrng_rows():
         {"quantum_floor": [qf, None]},
     )()
     sampler._qrng_clients = {
-        (
-            qf.api_url,
-            qf.api_key,
-            qf.k,
-            qf.buffer_size,
-            qf.recv_timeout_ms,
-            qf.require_full_vocab,
-            qf.debug_tax,
-            qf.debug_samples,
-            qf.log_path,
-        ): FakeQRNGSource([0])
+        quantum_lever_cache_key(qf): FakeQRNGSource([0])
     }
 
     sampled = torch.tensor([9, 8])
@@ -236,6 +227,14 @@ def test_sampling_params_rejects_quantum_floor_spec_decode_and_large_k():
     with pytest.raises(VLLMValidationError) as exc_info:
         params._validate_quantum_floor(ModelConfig(), speculative_config=object())
     assert exc_info.value.parameter == "quantum_floor"
+
+
+def test_sampling_params_repr_masks_quantum_api_key():
+    params = SamplingParams(
+        quantum_floor=QuantumFloorParams(api_key="secret-floor"),
+    )
+    assert "secret-floor" not in repr(params)
+    assert "api_key" not in repr(params.quantum_floor)
 
 
 @pytest.mark.parametrize(

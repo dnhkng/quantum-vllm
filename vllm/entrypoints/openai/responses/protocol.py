@@ -264,11 +264,11 @@ class ResponsesRequest(OpenAIBaseModel):
     )
     quantum_floor: QuantumFloorParams | None = Field(
         default=None,
-        description="QRNG-backed quantum-floor sampling parameters.",
+        description="Quantum Lever-backed quantum-floor sampling parameters.",
     )
     quantum_seed: QuantumSeedParams | None = Field(
         default=None,
-        description="QRNG-backed per-request PRNG seed parameters.",
+        description="Quantum Lever-backed per-request PRNG seed parameters.",
     )
 
     repetition_penalty: float | None = None

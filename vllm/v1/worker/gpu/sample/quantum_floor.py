@@ -135,6 +135,24 @@ def select_token_index(probs: np.ndarray, raw_u32: int, k: int) -> int:
 QuantumLeverParams = QuantumFloorParams | QuantumSeedParams
 
 
+def quantum_lever_cache_key(params: QuantumLeverParams) -> tuple[object, ...]:
+    return tuple(
+        (name, getattr(params, name))
+        for name in (
+            "api_url",
+            "api_key",
+            "buffer_size",
+            "recv_timeout_ms",
+            "k",
+            "require_full_vocab",
+            "debug_tax",
+            "debug_samples",
+            "log_path",
+        )
+        if hasattr(params, name)
+    )
+
+
 class QuantumLeverClient:
     def __init__(self, params: QuantumLeverParams):
         self._params = params

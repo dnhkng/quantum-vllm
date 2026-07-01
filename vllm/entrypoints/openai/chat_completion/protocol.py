@@ -231,11 +231,11 @@ class ChatCompletionRequest(OpenAIBaseModel):
     thinking_token_budget: ThinkingTokenBudget = None
     quantum_floor: QuantumFloorParams | None = Field(
         default=None,
-        description="QRNG-backed quantum-floor sampling parameters.",
+        description="Quantum Lever-backed quantum-floor sampling parameters.",
     )
     quantum_seed: QuantumSeedParams | None = Field(
         default=None,
-        description="QRNG-backed per-request PRNG seed parameters.",
+        description="Quantum Lever-backed per-request PRNG seed parameters.",
     )
     include_reasoning: bool = True
     parallel_tool_calls: bool | None = True

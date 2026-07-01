@@ -198,11 +198,11 @@ class CompletionRequest(OpenAIBaseModel):
     )
     quantum_floor: QuantumFloorParams | None = Field(
         default=None,
-        description="QRNG-backed quantum-floor sampling parameters.",
+        description="Quantum Lever-backed quantum-floor sampling parameters.",
     )
     quantum_seed: QuantumSeedParams | None = Field(
         default=None,
-        description="QRNG-backed per-request PRNG seed parameters.",
+        description="Quantum Lever-backed per-request PRNG seed parameters.",
     )
 
     # --8<-- [end:completion-extra-params]

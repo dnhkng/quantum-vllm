@@ -167,6 +167,40 @@ The following extra parameters are supported:
     --8<-- "vllm/entrypoints/openai/chat_completion/protocol.py:chat-completion-extra-params"
     ```
 
+#### Quantum Lever Sampling
+
+The `quantum_floor` and `quantum_seed` request parameters enable Quantum
+Lever-backed sampling for `/v1/completions`, `/v1/chat/completions`, and
+`/v1/responses`.
+
+`quantum_floor` samples from the full vocabulary using entropy snapshots from
+the Quantum Lever API. It requires non-greedy sampling with truncation and
+constraint samplers disabled, so use `temperature > 0`, `top_k: 0`, `top_p: 1`,
+and `min_p: 0`. It is not compatible with speculative decoding, structured
+outputs, grammar constraints, token filters, `ignore_eos`, or `min_tokens`.
+
+`quantum_seed` reads one Quantum Lever word and uses it as the per-request
+sampler seed. It cannot be combined with an explicit `seed` or with
+`quantum_floor`.
+
+Example request fragment:
+
+```json
+{
+  "temperature": 0.8,
+  "top_k": 0,
+  "top_p": 1.0,
+  "min_p": 0.0,
+  "quantum_floor": {
+    "api_key": "YOUR_QUANTUM_LEVER_API_KEY",
+    "api_url": "https://quantumlever.stream/v1/entropy/snapshot",
+    "k": 64,
+    "buffer_size": 256,
+    "recv_timeout_ms": 2000
+  }
+}
+```
+
 ### Responses API
 
 Our Responses API is compatible with [OpenAI's Responses API](https://platform.openai.com/docs/api-reference/responses);
