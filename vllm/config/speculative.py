@@ -690,6 +690,7 @@ class SpeculativeConfig:
                     enforce_eager=self.target_model_config.enforce_eager,
                     max_logprobs=self.target_model_config.max_logprobs,
                     hf_overrides=SpeculativeConfig.hf_config_override,
+                    hf_config_path=self.target_model_config.hf_config_path,
                     config_format=self.target_model_config.config_format,
                 )
 

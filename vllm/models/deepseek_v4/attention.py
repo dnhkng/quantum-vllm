@@ -90,6 +90,87 @@ def _select_v4_sparse_impl() -> "type[DeepseekV4SparseMLAAttentionImpl]":
     return DeepseekV4FlashMLASparseImpl
 
 
+def _maybe_unpack_linear_output(
+    output: torch.Tensor | tuple[torch.Tensor, torch.Tensor | None],
+) -> torch.Tensor:
+    if isinstance(output, tuple):
+        return output[0]
+    return output
+
+
+def _get_fp8_weight_scale(layer: nn.Module) -> torch.Tensor | None:
+    if hasattr(layer, "weight_scale_inv"):
+        return layer.weight_scale_inv
+    if hasattr(layer, "weight_scale"):
+        return layer.weight_scale
+    return None
+
+
+def _inv_rope_bf16_o_proj(
+    o: torch.Tensor,
+    positions: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    wo_a: nn.Module,
+    *,
+    n_groups: int,
+    heads_per_group: int,
+    nope_dim: int,
+    rope_dim: int,
+    o_lora_rank: int,
+) -> torch.Tensor:
+    num_tokens, num_heads, head_dim = o.shape
+    expected_heads = n_groups * heads_per_group
+    expected_head_dim = nope_dim + rope_dim
+    if num_heads != expected_heads:
+        raise ValueError(f"Expected {expected_heads} heads, got {num_heads}.")
+    if head_dim != expected_head_dim:
+        raise ValueError(
+            f"Expected head dimension {expected_head_dim}, got {head_dim}."
+        )
+    if rope_dim % 2 != 0:
+        raise ValueError(f"rope_dim must be even, got {rope_dim}.")
+
+    grouped = o.reshape(num_tokens, n_groups, heads_per_group, head_dim)
+    projected = grouped.clone()
+
+    rope = projected[..., nope_dim:]
+    rope_pairs = rope.reshape(*rope.shape[:-1], rope_dim // 2, 2)
+    cos_sin = cos_sin_cache.index_select(0, positions)
+    cos, sin = cos_sin.chunk(2, dim=-1)
+    cos = cos[:, None, None, :, None].to(dtype=rope.dtype)
+    sin = sin[:, None, None, :, None].to(dtype=rope.dtype)
+
+    x0 = rope_pairs[..., 0:1]
+    x1 = rope_pairs[..., 1:2]
+    rope_pairs.copy_(torch.cat((x0 * cos + x1 * sin, x1 * cos - x0 * sin), dim=-1))
+
+    wo_a_weight = getattr(wo_a, "weight", None)
+    wo_a_input_size = (
+        wo_a_weight.shape[-1]
+        if wo_a_weight is not None and wo_a_weight.ndim >= 2
+        else getattr(wo_a, "input_size", heads_per_group * head_dim)
+    )
+    flattened_size = num_heads * head_dim
+    if flattened_size % wo_a_input_size != 0:
+        raise ValueError(
+            "Cannot reshape O-proj input of size "
+            f"{flattened_size} into groups of size {wo_a_input_size}."
+        )
+
+    wo_a_groups = flattened_size // wo_a_input_size
+    wo_a_input = projected.reshape(num_tokens, wo_a_groups, wo_a_input_size)
+    if (
+        wo_a_weight is not None
+        and wo_a_weight.ndim == 2
+        and wo_a_weight.shape[0] % o_lora_rank == 0
+        and wo_a_weight.shape[0] // o_lora_rank == wo_a_groups
+    ):
+        grouped_weight = wo_a_weight.reshape(wo_a_groups, o_lora_rank, wo_a_input_size)
+        return torch.einsum("bgi,gri->bgr", wo_a_input, grouped_weight)
+
+    return _maybe_unpack_linear_output(wo_a(wo_a_input))
+
+
 @dataclass
 class DeepseekV4MLAModules:
     """Modules used in DeepseekV4 MLA."""
@@ -315,7 +396,24 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
             )
             return self.wo_b(z.flatten(1))
 
-        # O projection: inverse RoPE + FP8 quant + einsum + wo_b
+        # O projection: inverse RoPE + FP8 quant + einsum + wo_b.
+        # MTP draft weights may be BF16 and therefore do not expose FP8 scale
+        # metadata; keep those on the BF16 grouped projection path.
+        wo_a_scale = _get_fp8_weight_scale(self.wo_a)
+        if wo_a_scale is None:
+            z = _inv_rope_bf16_o_proj(
+                o,
+                positions,
+                self.rotary_emb.cos_sin_cache,
+                self.wo_a,
+                n_groups=self.n_local_groups,
+                heads_per_group=self.n_local_heads // self.n_local_groups,
+                nope_dim=self.nope_head_dim,
+                rope_dim=self.rope_head_dim,
+                o_lora_rank=self.o_lora_rank,
+            )
+            return self.wo_b(z.flatten(1))
+
         o_fp8, o_scale = fused_inv_rope_fp8_quant(
             o,
             positions,
@@ -328,7 +426,6 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
         )
 
         wo_a_fp8 = self.wo_a.weight
-        wo_a_scale = self.wo_a.weight_scale_inv
 
         z = torch.empty(
             (num_tokens, self.n_local_groups, self.o_lora_rank),

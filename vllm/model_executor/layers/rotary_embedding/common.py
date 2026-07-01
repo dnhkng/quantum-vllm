@@ -136,9 +136,15 @@ class ApplyRotaryEmb(CustomOp):
 
         self.apply_rotary_emb_flash_attn = None
         if not current_platform.is_cpu() and find_spec("flash_attn") is not None:
-            from flash_attn.ops.triton.rotary import apply_rotary
-
-            self.apply_rotary_emb_flash_attn = apply_rotary
+            try:
+                from flash_attn.ops.triton.rotary import apply_rotary
+            except ImportError:
+                logger.warning_once(
+                    "Failed to import flash_attn rotary; falling back to vLLM "
+                    "rotary implementation."
+                )
+            else:
+                self.apply_rotary_emb_flash_attn = apply_rotary
 
     @staticmethod
     def forward_static(
