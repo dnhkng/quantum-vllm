@@ -23,8 +23,9 @@ quantum-vllm --quantum-api-key YOUR_QUANTUM_LEVER_API_KEY
 
 `quantum-vllm serve` accepts the same non-debug Quantum Lever flags as
 `quantum-llama-server`: `--quantum-api-key`, `--quantum-api-url`,
-`--quantum-source`, `--quantum-sampler`, `--quantum-personalization`,
-`--quantum-k`, and `--quantum-recv-timeout`.
+`--quantum-sampler`, `--quantum-personalization`, `--quantum-k`, and
+`--quantum-recv-timeout`. The free mode always uses QRNG entropy; the
+subscriber sampler always uses the Lever stream.
 
 This fork tracks upstream `vllm`, but is not intended to be merged upstream.
 

@@ -172,8 +172,8 @@ The following extra parameters are supported:
 
 This fork installs the CLI as `quantum-vllm` rather than `vllm`. Its Quantum
 Lever flags match `quantum-llama-server` for the non-debug options:
-`--quantum-api-key`, `--quantum-api-url`, `--quantum-source`,
-`--quantum-sampler`, `--quantum-personalization`, `--quantum-k`, and
+`--quantum-api-key`, `--quantum-api-url`, `--quantum-sampler`,
+`--quantum-personalization`, `--quantum-k`, and
 `--quantum-recv-timeout`. To smoke-test Quantum Lever credentials before
 starting a server, run:
 
@@ -181,24 +181,30 @@ starting a server, run:
 quantum-vllm --quantum-api-key YOUR_QUANTUM_LEVER_API_KEY
 ```
 
-The `quantum_floor` and `quantum_seed` request parameters enable Quantum
+The `quantum_floor` and `quantum_dist` request parameters enable Quantum
 Lever-backed sampling for `/v1/completions`, `/v1/chat/completions`, and
 `/v1/responses`. Those endpoints also accept `quantum-llama-server` style flat
-JSON fields: `quantum_api_key`, `quantum_api_url`, `quantum_source`,
-`quantum_sampler`, `quantum_personalization`, `quantum_k`, and
+JSON fields: `quantum_api_key`, `quantum_api_url`, `quantum_sampler`,
+`quantum_personalization`, `quantum_k`, and
 `quantum_recv_timeout`. The implementation lives under `vllm/quantum/`; the
 serving and sampler paths only import the request parameters and entropy
 reader.
 
-`quantum_floor` samples from the full vocabulary using entropy snapshots from
-the Quantum Lever API. It requires non-greedy sampling with truncation and
+`quantum_floor` samples from the full vocabulary using raw which-path batches
+from `/v1/lever/latest`. It discards the batch present when a request starts,
+then waits for the next distinct batch before sampling. It requires non-greedy
+sampling with truncation and
 constraint samplers disabled, so use `temperature > 0`, `top_k: 0`, `top_p: 1`,
-and `min_p: 0`. It is not compatible with speculative decoding, structured
+`min_p: 0`, and default penalty values. Temperature is the only parameter that
+may alter the distribution. It is not compatible with speculative decoding,
+structured
 outputs, grammar constraints, token filters, `ignore_eos`, or `min_tokens`.
 
-`quantum_seed` reads one Quantum Lever word and uses it as the per-request
-sampler seed. It cannot be combined with an explicit `seed` or with
-`quantum_floor`.
+`quantum_dist` uses one whitened word from `/v1/qrng/latest` for every emitted
+token. It preserves the normal sampler stack and performs the final
+proportional draw over an exact 2^32 integer address space. Probability mass
+below that resolution can remain unreachable by design. `quantum_dist` cannot
+be combined with `quantum_floor`.
 
 Example request fragment:
 
@@ -210,7 +216,6 @@ Example request fragment:
   "min_p": 0.0,
   "quantum_api_key": "YOUR_QUANTUM_LEVER_API_KEY",
   "quantum_api_url": "https://quantumlever.stream",
-  "quantum_source": "qrng",
   "quantum_sampler": true,
   "quantum_k": 64,
   "quantum_recv_timeout": 2000
