@@ -9,7 +9,7 @@ from vllm.config.model import LogprobsMode
 from vllm.quantum.quantum_floor import (
     QRNGSource,
     QuantumLeverClient,
-    quantum_lever_cache_key,
+    select_dist_token_index,
     select_token_index,
 )
 from vllm.sampling_params import SamplingParams
@@ -57,17 +57,33 @@ class Sampler:
         self.bad_words_state = BadWordsState(req_states)
         self.logprob_token_ids_state = LogprobTokenIdsState(max_num_reqs, device)
         self.num_speculative_tokens = num_speculative_tokens
-        self._qrng_clients: dict[tuple[str, int, int, int, bool], QRNGSource] = {}
         self.use_flashinfer = flashinfer_sampler_supported()
+        self._quantum_clients: dict[int, QRNGSource] = {}
 
     def add_request(
         self, req_idx: int, prompt_len: int, sampling_params: SamplingParams
     ) -> None:
         self.sampling_states.add_request(req_idx, sampling_params)
+        old_client = self._quantum_clients.pop(req_idx, None)
+        if old_client is not None and hasattr(old_client, "close"):
+            old_client.close()
+        quantum_params = sampling_params.quantum_floor or sampling_params.quantum_dist
+        if quantum_params is not None:
+            mode = "floor" if sampling_params.quantum_floor is not None else "dist"
+            client = QuantumLeverClient(quantum_params, mode)
+            client.start()
+            self._quantum_clients[req_idx] = client
         self.penalties_state.add_request(req_idx, sampling_params)
         self.logit_bias_state.add_request(req_idx, prompt_len, sampling_params)
         self.bad_words_state.add_request(req_idx, sampling_params)
         self.logprob_token_ids_state.add_request(req_idx, sampling_params)
+
+    def remove_request(self, req_idx: int) -> None:
+        client = self._quantum_clients.pop(req_idx, None)
+        if client is not None and hasattr(client, "close"):
+            client.close()
+        self.sampling_states.quantum_floor[req_idx] = None
+        self.sampling_states.quantum_dist[req_idx] = None
 
     def apply_staged_writes(self) -> None:
         self.sampling_states.apply_staged_writes()
@@ -232,6 +248,7 @@ class Sampler:
             or (return_logprobs and self.logprobs_mode == "processed_logprobs")
             or self.sampling_states.any_greedy(idx_mapping_np)
             or self.sampling_states.any_explicit_seed(idx_mapping_np)
+            or self.sampling_states.has_quantum(idx_mapping_np)
         )
 
         # Sample the next token.
@@ -248,15 +265,15 @@ class Sampler:
                 apply_temperature=False,
                 use_fp64=self.use_fp64_gumbel,
             )
-        if self.sampling_states.has_quantum_floor(idx_mapping_np):
-            sampled = self._sample_quantum_floor(
+        if self.sampling_states.has_quantum(idx_mapping_np):
+            sampled = self._sample_quantum(
                 sampled,
                 processed_logits,
                 expanded_idx_mapping,
             )
         return sampled, processed_logits
 
-    def _sample_quantum_floor(
+    def _sample_quantum(
         self,
         sampled: torch.Tensor,
         processed_logits: torch.Tensor,
@@ -264,28 +281,36 @@ class Sampler:
     ) -> torch.Tensor:
         sampled = sampled.clone()
         expanded_req_indices = expanded_idx_mapping.detach().cpu().numpy()
-        logits_cpu = processed_logits.detach().to("cpu", dtype=torch.float64)
+        quantum_rows = [
+            row_idx
+            for row_idx, req_idx in enumerate(expanded_req_indices)
+            if self.sampling_states.quantum_floor[int(req_idx)] is not None
+            or self.sampling_states.quantum_dist[int(req_idx)] is not None
+        ]
+        logits_cpu = (
+            processed_logits[quantum_rows].detach().to("cpu", dtype=torch.float64)
+        )
 
-        for row_idx, req_idx in enumerate(expanded_req_indices):
+        for cpu_row, row_idx in enumerate(quantum_rows):
+            req_idx = int(expanded_req_indices[row_idx])
             qf = self.sampling_states.quantum_floor[int(req_idx)]
-            if qf is None:
-                continue
+            qd = self.sampling_states.quantum_dist[int(req_idx)]
 
-            row = logits_cpu[row_idx]
-            if not torch.isfinite(row).all():
+            row = logits_cpu[cpu_row]
+            if qf is not None and not torch.isfinite(row).all():
                 raise RuntimeError(
                     "quantum_floor requires finite full-vocabulary logits"
                 )
-            probs = torch.softmax(row, dim=-1).numpy()
-            raw = self._get_qrng_client(qf).read_u32()
-            token_idx = select_token_index(probs, raw, qf.k)
+            raw = self._quantum_clients[req_idx].read_u32()
+            if qf is not None:
+                probs = torch.softmax(row, dim=-1).numpy()
+                token_idx = select_token_index(probs, raw, qf.k)
+            elif qd is not None:
+                if self.sampling_states.temperature.np[req_idx] == 0.0:
+                    continue
+                probs = torch.softmax(row, dim=-1).numpy()
+                token_idx = select_dist_token_index(probs, raw)
+            else:
+                continue
             sampled[row_idx] = token_idx
         return sampled
-
-    def _get_qrng_client(self, params) -> QRNGSource:
-        key = quantum_lever_cache_key(params)
-        client = self._qrng_clients.get(key)
-        if client is None:
-            client = QuantumLeverClient(params)
-            self._qrng_clients[key] = client
-        return client

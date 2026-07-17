@@ -2,6 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Quantum sampling support."""
 
-from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
+from vllm.quantum.params import QuantumDistParams, QuantumFloorParams
 
-__all__ = ["QuantumFloorParams", "QuantumSeedParams"]
+__all__ = ["QuantumDistParams", "QuantumFloorParams"]

@@ -6,21 +6,27 @@ from __future__ import annotations
 import base64
 import json
 import math
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 
-from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
+from vllm.logger import init_logger
+from vllm.quantum.params import QuantumDistParams, QuantumFloorParams
 
 QUANTUM_FLOOR_M = 1 << 32
 QUANTUM_FLOOR_MASK = QUANTUM_FLOOR_M - 1
 QUANTUM_FLOOR_K_MAX = 1 << 20
+QUANTUM_BIAS_WINDOW_BITS = 65536
+
+logger = init_logger(__name__)
 
 
 class QRNGSource(Protocol):
@@ -29,6 +35,12 @@ class QRNGSource(Protocol):
 
 @dataclass(frozen=True)
 class QuantumFloorAllocation:
+    slots: np.ndarray
+    cdf: np.ndarray
+
+
+@dataclass(frozen=True)
+class QuantumDistAllocation:
     slots: np.ndarray
     cdf: np.ndarray
 
@@ -129,44 +141,89 @@ def build_allocation(probs: np.ndarray, k: int) -> QuantumFloorAllocation:
 def select_token_index(probs: np.ndarray, raw_u32: int, k: int) -> int:
     alloc = build_allocation(probs, k)
     spread = spread_u32(raw_u32)
-    return int(np.searchsorted(alloc.cdf, spread, side="right"))
+    index = int(np.searchsorted(alloc.cdf, spread, side="right"))
+    return min(index, alloc.cdf.size - 1)
 
 
-QuantumLeverParams = QuantumFloorParams | QuantumSeedParams
+def build_dist_allocation(probs: np.ndarray) -> QuantumDistAllocation:
+    probs = np.asarray(probs, dtype=np.float64)
+    if probs.ndim != 1 or probs.size == 0:
+        raise ValueError("quantum_dist requires a non-empty 1D probability vector")
+    if np.any(~np.isfinite(probs)) or np.any(probs < 0.0):
+        raise ValueError("quantum_dist received invalid probability mass")
+
+    total_prob = math.fsum(float(prob) for prob in probs)
+    if not math.isfinite(total_prob) or total_prob <= 0.0:
+        raise ValueError("quantum_dist received invalid probability mass")
+
+    quotas = probs * (float(QUANTUM_FLOOR_M) / total_prob)
+    slots = np.floor(quotas).astype(np.uint64)
+    residual = QUANTUM_FLOOR_M - int(slots.sum(dtype=np.uint64))
+    if residual < 0 or residual > probs.size:
+        raise ValueError("quantum_dist produced an invalid slot residual")
+
+    if residual:
+        remainders = quotas - slots
+        cutoff = np.partition(remainders, probs.size - residual)[probs.size - residual]
+        winners = np.flatnonzero(remainders > cutoff)
+        slots[winners] += 1
+        ties_needed = residual - winners.size
+        if ties_needed:
+            # Hamilton apportionment assigns tied residuals by token order.
+            ties = np.flatnonzero(remainders == cutoff)[:ties_needed]
+            slots[ties] += 1
+
+    cdf = np.cumsum(slots, dtype=np.uint64)
+    if int(cdf[-1]) != QUANTUM_FLOOR_M:
+        raise ValueError("quantum_dist slot allocation did not fill address space")
+    return QuantumDistAllocation(slots=slots, cdf=cdf)
 
 
-def quantum_lever_cache_key(params: QuantumLeverParams) -> tuple[object, ...]:
-    return tuple(
-        (name, getattr(params, name))
-        for name in (
-            "api_url",
-            "api_key",
-            "source",
-            "personalization",
-            "buffer_size",
-            "recv_timeout_ms",
-            "k",
-            "require_full_vocab",
-        )
-        if hasattr(params, name)
-    )
+def select_dist_token_index(probs: np.ndarray, raw_u32: int) -> int:
+    alloc = build_dist_allocation(probs)
+    return int(np.searchsorted(alloc.cdf, raw_u32 & QUANTUM_FLOOR_MASK, side="right"))
+
+
+QuantumLeverParams = QuantumFloorParams | QuantumDistParams
+QuantumMode = Literal["dist", "floor"]
 
 
 class QuantumLeverClient:
-    def __init__(self, params: QuantumLeverParams):
+    def __init__(self, params: QuantumLeverParams, mode: QuantumMode):
         self._params = params
+        self._mode = mode
         self._bytes: deque[int] = deque()
         self._words_produced = 0
+        self._bytes_received = 0
+        self._last_payload_hash = ""
+        self._next_fetch_time = 0.0
+        self._bits: deque[int] = deque()
+        self._bit_ones = 0
+        self._last_diag_time = time.monotonic()
+        self._last_bias_warning = float("-inf")
+
+    def start(self) -> None:
+        self._check_key()
+        self._refill()
+        if self._mode == "floor":
+            self._bytes.clear()
+            while not self._bytes:
+                self._wait_for_next_fetch()
+                self._refill()
 
     def read_u32(self) -> int:
         while len(self._bytes) < 4:
+            before = len(self._bytes)
             self._refill()
+            if len(self._bytes) == before:
+                self._wait_for_next_fetch()
 
         value = 0
         for shift in range(0, 32, 8):
             value |= self._bytes.popleft() << shift
         word_index = self._words_produced
         self._words_produced += 1
+        self._log_diagnostics_if_due()
         return quantum_personalize_word(
             value, getattr(self._params, "personalization", ""), word_index
         )
@@ -175,13 +232,15 @@ class QuantumLeverClient:
         self._bytes.clear()
 
     def _refill(self) -> None:
-        url = self._entropy_url()
+        url = self._api_url(
+            "/v1/lever/latest" if self._mode == "floor" else "/v1/qrng/latest"
+        )
         request = urllib.request.Request(
             url,
             headers={
                 "Accept": "application/json",
                 "Authorization": f"Bearer {self._params.api_key}",
-                "User-Agent": "vllm quantum_floor",
+                "User-Agent": f"vllm quantum_{self._mode}",
             },
         )
         timeout = self._params.recv_timeout_ms / 1000.0
@@ -191,65 +250,175 @@ class QuantumLeverClient:
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(
-                "quantum_floor Quantum Lever entropy snapshot "
+                f"quantum_{self._mode} Quantum Lever entropy snapshot "
                 f"HTTP {exc.code}: {detail}"
             ) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(
-                "quantum_floor failed to fetch Quantum Lever entropy snapshot"
+                f"quantum_{self._mode} failed to fetch Quantum Lever entropy snapshot"
             ) from exc
 
         try:
             payload = json.loads(body)
-            encoded = payload.get("payload_b64", payload.get("bytes_b64"))
+            encoded = payload.get("payload_b64")
             if not isinstance(encoded, str):
-                raise TypeError("payload_b64 or bytes_b64 must be a string")
+                raise TypeError("payload_b64 must be a string")
             decoded = base64.b64decode(encoded, validate=True)
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(
-                "quantum_floor Quantum Lever response missing valid entropy payload"
+                f"quantum_{self._mode} Quantum Lever response missing valid "
+                "entropy payload"
             ) from exc
 
         if not decoded:
             raise RuntimeError(
-                "quantum_floor Quantum Lever response contained no entropy bytes"
+                f"quantum_{self._mode} Quantum Lever response contained no "
+                "entropy bytes"
             )
+        payload_hash = payload.get("payload_hash", "")
+        if self._mode == "floor" and not payload_hash:
+            raise RuntimeError(
+                "quantum_floor Quantum Lever response missing payload_hash"
+            )
+        self._next_fetch_time = self._compute_next_fetch_time(payload)
+        if payload_hash and payload_hash == self._last_payload_hash:
+            return
+        self._last_payload_hash = payload_hash
         self._bytes.extend(decoded)
+        self._bytes_received += len(decoded)
+        self._note_bytes(decoded)
 
-    def _entropy_url(self) -> str:
+    def _api_url(self, path: str) -> str:
         parsed = urllib.parse.urlsplit(self._params.api_url)
-        if parsed.path not in ("", "/"):
-            return self._snapshot_url(parsed)
-
-        source = getattr(self._params, "source", "qrng")
-        if source == "lever":
-            path = "/v1/lever/latest"
-        elif source in ("", "qrng"):
-            path = "/v1/qrng/latest"
-        else:
-            raise RuntimeError("quantum: --quantum-source must be 'qrng' or 'lever'")
-
         return urllib.parse.urlunsplit(
             (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
         )
 
-    def _snapshot_url(self, parsed: urllib.parse.SplitResult) -> str:
-        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        query.append(("bytes", str(max(4, self._params.buffer_size))))
-        return urllib.parse.urlunsplit(
-            (
-                parsed.scheme,
-                parsed.netloc,
-                parsed.path,
-                urllib.parse.urlencode(query),
-                parsed.fragment,
-            )
+    def _check_key(self) -> None:
+        request = urllib.request.Request(
+            self._api_url("/v1/auth/check-key"),
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self._params.api_key}",
+                "User-Agent": f"vllm quantum_{self._mode}",
+            },
         )
+        timeout = self._params.recv_timeout_ms / 1000.0
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read())
+        except (urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "quantum: failed to validate Quantum Lever API key"
+            ) from exc
+
+        capabilities = payload.get("capabilities", {})
+        required = ("qrng",) if self._mode == "dist" else ("lever", "quantum_sampler")
+        for capability in required:
+            if capabilities.get(capability) is not True:
+                if self._mode == "dist":
+                    tier = "a free ql_day_ or ql_week_ key"
+                else:
+                    tier = "a subscriber ql_lever_ key"
+                raise RuntimeError(
+                    f"quantum_{self._mode}: API key lacks '{capability}' capability "
+                    f"(requires {tier})"
+                )
+
+    def _compute_next_fetch_time(self, payload: dict[str, object]) -> float:
+        cadence_ms = int(payload.get("cadence_ms", 2000))
+        wait_ms = cadence_ms
+        try:
+            closed = _parse_api_time(payload["batch_closed_at"])
+            server = _parse_api_time(payload["server_time"])
+            wait_ms = cadence_ms - int((server - closed).total_seconds() * 1000) + 25
+        except (KeyError, TypeError, ValueError):
+            pass
+        wait_ms = max(50, min(wait_ms, max(50, cadence_ms)))
+        return time.monotonic() + wait_ms / 1000.0
+
+    def _wait_for_next_fetch(self) -> None:
+        delay = self._next_fetch_time - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+
+    def _note_bytes(self, data: bytes) -> None:
+        for byte in data:
+            for shift in range(8):
+                bit = (byte >> shift) & 1
+                self._bits.append(bit)
+                self._bit_ones += bit
+                if len(self._bits) > QUANTUM_BIAS_WINDOW_BITS:
+                    self._bit_ones -= self._bits.popleft()
+
+    def _log_diagnostics_if_due(self) -> None:
+        now = time.monotonic()
+        if now - self._last_diag_time < 1.0:
+            return
+        mean = self._bit_ones / len(self._bits) if self._bits else 0.0
+        if self._mode == "floor":
+            logger.info(
+                "quantum_floor bytes=%d words=%d mean=%.6f lag1_corr=%.6f",
+                self._bytes_received,
+                self._words_produced,
+                mean,
+                _lag1_correlation(self._bits),
+            )
+            warning = quantum_floor_bias_warning(
+                len(self._bits), mean, now, self._last_bias_warning
+            )
+            if warning is not None:
+                logger.warning("quantum_floor %s", warning)
+                self._last_bias_warning = now
+        else:
+            logger.info(
+                "quantum_dist bytes=%d words=%d mean=%.6f",
+                self._bytes_received,
+                self._words_produced,
+                mean,
+            )
+        self._last_diag_time = now
 
 
-def quantum_personalize_word(
-    word: int, personalization: str, word_index: int
-) -> int:
+def _parse_api_time(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise TypeError("API timestamp must be a string")
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def quantum_floor_bias_warning(
+    bit_count: int,
+    mean: float,
+    now: float,
+    last_warning: float,
+) -> str | None:
+    if bit_count < QUANTUM_BIAS_WINDOW_BITS or 0.45 <= mean <= 0.55:
+        return None
+    if now - last_warning < 60.0:
+        return None
+    delta = abs(2.0 * mean - 1.0)
+    return (
+        f"detector bias mean={mean:.6f} implied_delta={delta:.6f} exceeds "
+        "the K=64 design point for detector imbalance"
+    )
+
+
+def _lag1_correlation(bits: deque[int]) -> float:
+    if len(bits) < 2:
+        return 0.0
+    values = np.fromiter(bits, dtype=np.float64)
+    x = values[:-1]
+    y = values[1:]
+    mx = float(x.mean())
+    my = float(y.mean())
+    variance = mx * (1.0 - mx) * my * (1.0 - my)
+    if variance <= 0.0:
+        return 0.0
+    covariance = float((x * y).mean()) - mx * my
+    return covariance / math.sqrt(variance)
+
+
+def quantum_personalize_word(word: int, personalization: str, word_index: int) -> int:
     if not personalization:
         return word & QUANTUM_FLOOR_MASK
     key = _quantum_personalization_key(personalization)
@@ -260,9 +429,7 @@ def quantum_personalize_word(
 def _quantum_personalization_key(personalization: str) -> tuple[int, ...]:
     words: list[int] = []
     for i in range(4):
-        h = _quantum_fnv1a64(
-            personalization, 0x9E3779B97F4A7C15 * (i + 1)
-        )
+        h = _quantum_fnv1a64(personalization, 0x9E3779B97F4A7C15 * (i + 1))
         words.append(h & QUANTUM_FLOOR_MASK)
         words.append((h >> 32) & QUANTUM_FLOOR_MASK)
     return tuple(words)

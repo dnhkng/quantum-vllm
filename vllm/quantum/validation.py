@@ -5,60 +5,42 @@
 from typing import Any
 
 from vllm.exceptions import VLLMValidationError
-from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
+from vllm.quantum.params import QuantumDistParams, QuantumFloorParams
+from vllm.quantum.quantum_floor import QUANTUM_FLOOR_K_MAX
 
 
-def verify_quantum_seed_args(
-    quantum_seed: QuantumSeedParams | None,
+def verify_quantum_dist_args(
+    quantum_dist: QuantumDistParams | None,
     *,
-    seed: int | None,
     quantum_floor: QuantumFloorParams | None,
 ) -> None:
-    if quantum_seed is None:
+    if quantum_dist is None:
         return
 
-    qs = quantum_seed
-    if not qs.api_url:
+    qd = quantum_dist
+    if not qd.api_url:
         raise VLLMValidationError(
-            "quantum_seed.api_url must be non-empty.",
-            parameter="quantum_seed.api_url",
-            value=qs.api_url,
+            "quantum_dist.api_url must be non-empty.",
+            parameter="quantum_dist.api_url",
+            value=qd.api_url,
         )
-    if not qs.api_key:
+    if not qd.api_key:
         raise VLLMValidationError(
-            "quantum_seed.api_key must be non-empty.",
-            parameter="quantum_seed.api_key",
-            value=qs.api_key,
+            "quantum_dist.api_key must be non-empty.",
+            parameter="quantum_dist.api_key",
+            value=qd.api_key,
         )
-    if qs.source not in ("qrng", "lever"):
+    if qd.recv_timeout_ms <= 0:
         raise VLLMValidationError(
-            "quantum_seed.source must be 'qrng' or 'lever'.",
-            parameter="quantum_seed.source",
-            value=qs.source,
-        )
-    if qs.buffer_size < 4:
-        raise VLLMValidationError(
-            "quantum_seed.buffer_size must be >= 4.",
-            parameter="quantum_seed.buffer_size",
-            value=qs.buffer_size,
-        )
-    if qs.recv_timeout_ms <= 0:
-        raise VLLMValidationError(
-            "quantum_seed.recv_timeout_ms must be positive.",
-            parameter="quantum_seed.recv_timeout_ms",
-            value=qs.recv_timeout_ms,
-        )
-    if seed is not None:
-        raise VLLMValidationError(
-            "quantum_seed cannot be used with an explicit seed.",
-            parameter="seed",
-            value=seed,
+            "quantum_dist.recv_timeout_ms must be positive.",
+            parameter="quantum_dist.recv_timeout_ms",
+            value=qd.recv_timeout_ms,
         )
     if quantum_floor is not None:
         raise VLLMValidationError(
-            "quantum_seed cannot be used with quantum_floor.",
-            parameter="quantum_seed",
-            value=qs,
+            "quantum_dist cannot be used with quantum_floor.",
+            parameter="quantum_dist",
+            value=qd,
         )
 
 
@@ -66,6 +48,9 @@ def verify_quantum_floor_args(
     quantum_floor: QuantumFloorParams | None,
     *,
     temperature: float,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float,
     top_k: int,
     top_p: float,
     min_p: float,
@@ -93,29 +78,17 @@ def verify_quantum_floor_args(
             parameter="quantum_floor.api_key",
             value=qf.api_key,
         )
-    if qf.source not in ("qrng", "lever"):
-        raise VLLMValidationError(
-            "quantum_floor.source must be 'qrng' or 'lever'.",
-            parameter="quantum_floor.source",
-            value=qf.source,
-        )
     if qf.k < 1:
         raise VLLMValidationError(
             "quantum_floor.k must be >= 1.",
             parameter="quantum_floor.k",
             value=qf.k,
         )
-    if not qf.require_full_vocab:
+    if qf.k > QUANTUM_FLOOR_K_MAX:
         raise VLLMValidationError(
-            "quantum_floor.require_full_vocab must be true.",
-            parameter="quantum_floor.require_full_vocab",
-            value=qf.require_full_vocab,
-        )
-    if qf.buffer_size < 4:
-        raise VLLMValidationError(
-            "quantum_floor.buffer_size must be >= 4.",
-            parameter="quantum_floor.buffer_size",
-            value=qf.buffer_size,
+            "quantum_floor.k must be <= 2^20.",
+            parameter="quantum_floor.k",
+            value=qf.k,
         )
     if qf.recv_timeout_ms <= 0:
         raise VLLMValidationError(
@@ -128,6 +101,24 @@ def verify_quantum_floor_args(
             "quantum_floor requires temperature > 0.",
             parameter="temperature",
             value=temperature,
+        )
+    if presence_penalty != 0.0:
+        raise VLLMValidationError(
+            "quantum_floor requires presence_penalty == 0.0.",
+            parameter="presence_penalty",
+            value=presence_penalty,
+        )
+    if frequency_penalty != 0.0:
+        raise VLLMValidationError(
+            "quantum_floor requires frequency_penalty == 0.0.",
+            parameter="frequency_penalty",
+            value=frequency_penalty,
+        )
+    if repetition_penalty != 1.0:
+        raise VLLMValidationError(
+            "quantum_floor requires repetition_penalty == 1.0.",
+            parameter="repetition_penalty",
+            value=repetition_penalty,
         )
     if top_k not in (0, -1):
         raise VLLMValidationError(
@@ -185,20 +176,24 @@ def verify_quantum_floor_args(
         )
 
 
-def validate_quantum_floor_model(
+def validate_quantum_model(
+    quantum_dist: QuantumDistParams | None,
     quantum_floor: QuantumFloorParams | None,
     *,
     model_config: Any,
     speculative_config: Any,
 ) -> None:
-    if quantum_floor is None:
+    if quantum_dist is None and quantum_floor is None:
         return
     if speculative_config is not None:
+        mode = "quantum_floor" if quantum_floor is not None else "quantum_dist"
         raise VLLMValidationError(
-            "quantum_floor is incompatible with speculative decoding.",
-            parameter="quantum_floor",
-            value=quantum_floor,
+            f"{mode} is incompatible with speculative decoding.",
+            parameter=mode,
+            value=quantum_floor or quantum_dist,
         )
+    if quantum_floor is None:
+        return
     vocab_size = model_config.get_vocab_size()
     if quantum_floor.k * vocab_size > 2**32:
         raise VLLMValidationError(

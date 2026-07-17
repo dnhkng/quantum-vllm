@@ -38,7 +38,7 @@ from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
 from vllm.quantum.compat import resolve_quantum_params
-from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
+from vllm.quantum.params import QuantumDistParams, QuantumFloorParams
 from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
     BeamSearchParams,
@@ -248,9 +248,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
         default=None,
         description="Quantum Lever-backed quantum-floor sampling parameters.",
     )
-    quantum_seed: QuantumSeedParams | None = Field(
+    quantum_dist: QuantumDistParams | None = Field(
         default=None,
-        description="Quantum Lever-backed per-request PRNG seed parameters.",
+        description="Quantum Lever-backed proportional sampling parameters.",
     )
     quantum_api_key: str | None = Field(
         default=None,
@@ -259,10 +259,6 @@ class ChatCompletionRequest(OpenAIBaseModel):
     quantum_api_url: str | None = Field(
         default=None,
         description="Quantum Lever API base URL.",
-    )
-    quantum_source: Literal["qrng", "lever"] | None = Field(
-        default=None,
-        description="Quantum Lever entropy source.",
     )
     quantum_sampler: bool | None = Field(
         default=None,
@@ -725,7 +721,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
         if self.kv_transfer_params:
             # Pass in kv_transfer_params via extra_args
             extra_args["kv_transfer_params"] = self.kv_transfer_params
-        quantum_floor, quantum_seed = resolve_quantum_params(
+        quantum_floor, quantum_dist = resolve_quantum_params(
             self, default_sampling_params
         )
         if self.ec_transfer_params:
@@ -768,7 +764,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             skip_clone=True,  # Created fresh per request, safe to skip clone
             repetition_detection=self.repetition_detection,
             quantum_floor=quantum_floor,
-            quantum_seed=quantum_seed,
+            quantum_dist=quantum_dist,
         )
 
     @model_validator(mode="before")

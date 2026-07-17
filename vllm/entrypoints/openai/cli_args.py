@@ -25,7 +25,7 @@ from vllm.entrypoints.serve.utils.constants import (
     H11_MAX_HEADER_COUNT_DEFAULT,
     H11_MAX_INCOMPLETE_EVENT_SIZE_DEFAULT,
 )
-from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
+from vllm.quantum.params import QuantumDistParams, QuantumFloorParams
 from vllm.tool_parsers import ToolParserManager
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
@@ -170,17 +170,15 @@ class BaseFrontendArgs:
     """Literal fingerprint string used when ``--fingerprint-mode=custom``."""
     quantum_api_key: str | None = None
     """Use Quantum Lever entropy with bearer key."""
-    quantum_api_url: str = QuantumSeedParams.api_url
+    quantum_api_url: str = QuantumDistParams.api_url
     """Quantum Lever API base URL."""
-    quantum_source: Literal["qrng", "lever"] = QuantumSeedParams.source
-    """Quantum Lever entropy source."""
     quantum_sampler: bool = False
     """Use the subscriber-only quantum_floor sampler."""
     quantum_personalization: str = ""
     """Personalize Quantum Lever entropy locally with a non-secret ChaCha20 label."""
     quantum_k: int = QuantumFloorParams.k
     """quantum_floor minimum integer-CDF slots per token."""
-    quantum_recv_timeout: int = QuantumSeedParams.recv_timeout_ms
+    quantum_recv_timeout: int = QuantumDistParams.recv_timeout_ms
     """Quantum Lever API read timeout in milliseconds."""
 
     @classmethod

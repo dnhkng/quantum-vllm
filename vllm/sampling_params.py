@@ -18,11 +18,11 @@ import vllm.envs as envs
 from vllm.config import ModelConfig, SpeculativeConfig, StructuredOutputsConfig
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
-from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
+from vllm.quantum.params import QuantumDistParams, QuantumFloorParams
 from vllm.quantum.validation import (
-    validate_quantum_floor_model,
+    validate_quantum_model,
+    verify_quantum_dist_args,
     verify_quantum_floor_args,
-    verify_quantum_seed_args,
 )
 from vllm.tokenizers import TokenizerLike
 from vllm.utils.mistral import is_mistral_tokenizer
@@ -359,8 +359,8 @@ class SamplingParams(
     and terminate early, saving time and tokens."""
     quantum_floor: QuantumFloorParams | None = None
     """Quantum Lever-backed full-vocabulary quantum-floor sampling parameters."""
-    quantum_seed: QuantumSeedParams | None = None
-    """Read one Quantum Lever word and use it as this request's sampler seed."""
+    quantum_dist: QuantumDistParams | None = None
+    """Proportional sampling from one Quantum Lever QRNG word per token."""
 
     @staticmethod
     def from_optional(
@@ -394,7 +394,7 @@ class SamplingParams(
         skip_clone: bool = False,
         repetition_detection: RepetitionDetectionParams | None = None,
         quantum_floor: QuantumFloorParams | None = None,
-        quantum_seed: QuantumSeedParams | None = None,
+        quantum_dist: QuantumDistParams | None = None,
         logprob_token_ids: list[int] | None = None,
     ) -> "SamplingParams":
         if logit_bias is not None:
@@ -458,7 +458,7 @@ class SamplingParams(
             skip_clone=skip_clone,
             repetition_detection=repetition_detection,
             quantum_floor=quantum_floor,
-            quantum_seed=quantum_seed,
+            quantum_dist=quantum_dist,
         )
 
     def __post_init__(self) -> None:
@@ -502,7 +502,7 @@ class SamplingParams(
             self.output_text_buffer_length = max(len(s) for s in self.stop) - 1
 
         self._verify_args()
-        self._verify_quantum_seed_args()
+        self._verify_quantum_dist_args()
         self._verify_quantum_floor_args()
 
         if self.temperature < _SAMPLING_EPS:
@@ -638,10 +638,9 @@ class SamplingParams(
                 f"Got bad_words={self.bad_words}"
             )
 
-    def _verify_quantum_seed_args(self) -> None:
-        verify_quantum_seed_args(
-            self.quantum_seed,
-            seed=self.seed,
+    def _verify_quantum_dist_args(self) -> None:
+        verify_quantum_dist_args(
+            self.quantum_dist,
             quantum_floor=self.quantum_floor,
         )
 
@@ -649,6 +648,9 @@ class SamplingParams(
         verify_quantum_floor_args(
             self.quantum_floor,
             temperature=self.temperature,
+            presence_penalty=self.presence_penalty,
+            frequency_penalty=self.frequency_penalty,
+            repetition_penalty=self.repetition_penalty,
             top_k=self.top_k,
             top_p=self.top_p,
             min_p=self.min_p,
@@ -786,7 +788,7 @@ class SamplingParams(
         self._validate_logits_processors(model_config)
         self._validate_allowed_token_ids(tokenizer)
         self._validate_spec_decode(speculative_config)
-        self._validate_quantum_floor(model_config, speculative_config)
+        self._validate_quantum(model_config, speculative_config)
         self._validate_diffusion(model_config)
         self._validate_structured_outputs(
             model_config, structured_outputs_config, tokenizer
@@ -921,12 +923,13 @@ class SamplingParams(
                 "are not yet supported with speculative decoding."
             )
 
-    def _validate_quantum_floor(
+    def _validate_quantum(
         self,
         model_config: ModelConfig,
         speculative_config: SpeculativeConfig | None,
     ) -> None:
-        validate_quantum_floor_model(
+        validate_quantum_model(
+            self.quantum_dist,
             self.quantum_floor,
             model_config=model_config,
             speculative_config=speculative_config,
@@ -1140,7 +1143,7 @@ class SamplingParams(
             "spaces_between_special_tokens="
             f"{self.spaces_between_special_tokens}, "
             f"structured_outputs={self.structured_outputs}, "
-            f"quantum_seed={self.quantum_seed}, "
+            f"quantum_dist={self.quantum_dist}, "
             f"quantum_floor={self.quantum_floor}, "
             f"extra_args={self.extra_args})"
         )

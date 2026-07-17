@@ -7,9 +7,9 @@ from __future__ import annotations
 from argparse import ArgumentParser, Namespace
 
 from vllm.quantum.compat import resolve_quantum_params
-from vllm.quantum.params import QuantumSeedParams
+from vllm.quantum.params import QuantumDistParams
 from vllm.quantum.quantum_floor import QuantumLeverClient
-from vllm.quantum.validation import verify_quantum_floor_args, verify_quantum_seed_args
+from vllm.quantum.validation import verify_quantum_dist_args, verify_quantum_floor_args
 
 
 def add_quantum_cli_args(parser: ArgumentParser) -> None:
@@ -23,17 +23,11 @@ def add_quantum_cli_args(parser: ArgumentParser) -> None:
     )
     parser.add_argument(
         "--quantum-api-url",
-        default=QuantumSeedParams.api_url,
+        default=QuantumDistParams.api_url,
         help=(
             "Quantum Lever API base URL used with --quantum-api-key. "
             "Defaults to %(default)s."
         ),
-    )
-    parser.add_argument(
-        "--quantum-source",
-        choices=("qrng", "lever"),
-        default=QuantumSeedParams.source,
-        help="Quantum Lever entropy source. Defaults to %(default)s.",
     )
     parser.add_argument(
         "--quantum-sampler",
@@ -59,23 +53,16 @@ def add_quantum_cli_args(parser: ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--quantum-buffer-size",
-        type=int,
-        default=QuantumSeedParams.buffer_size,
-        help=(
-            "Number of entropy bytes requested during the Quantum Lever CLI "
-            "smoke test. Defaults to %(default)s."
-        ),
-    )
-    parser.add_argument(
         "--quantum-recv-timeout",
         type=int,
-        default=QuantumSeedParams.recv_timeout_ms,
+        default=QuantumDistParams.recv_timeout_ms,
         help=(
             "Quantum Lever receive timeout in milliseconds during the CLI smoke "
             "test. Defaults to %(default)s."
         ),
     )
+
+
 def run_quantum_api_check_from_argv(argv: list[str]) -> bool:
     parser = ArgumentParser(
         prog="quantum-vllm",
@@ -91,17 +78,19 @@ def maybe_run_quantum_api_check(args: Namespace) -> bool:
     if api_key is None:
         return False
 
-    quantum_floor, quantum_seed = resolve_quantum_params(
+    quantum_floor, quantum_dist = resolve_quantum_params(
         args, default_sampling_params=None
     )
-    params = quantum_floor or quantum_seed
+    params = quantum_floor or quantum_dist
     if params is None:
         raise ValueError("Quantum Lever API check requires --quantum-api-key.")
-    params.buffer_size = args.quantum_buffer_size
     if quantum_floor is not None:
         verify_quantum_floor_args(
             quantum_floor,
             temperature=1.0,
+            presence_penalty=0.0,
+            frequency_penalty=0.0,
+            repetition_penalty=1.0,
             top_k=0,
             top_p=1.0,
             min_p=0.0,
@@ -114,10 +103,12 @@ def maybe_run_quantum_api_check(args: Namespace) -> bool:
             sampling_eps=1e-5,
         )
     else:
-        verify_quantum_seed_args(quantum_seed, seed=None, quantum_floor=None)
+        verify_quantum_dist_args(quantum_dist, quantum_floor=None)
 
-    client = QuantumLeverClient(params)
+    mode = "floor" if quantum_floor is not None else "dist"
+    client = QuantumLeverClient(params, mode)
     try:
+        client.start()
         word = client.read_u32()
     finally:
         client.close()

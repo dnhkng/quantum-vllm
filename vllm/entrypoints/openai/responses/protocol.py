@@ -64,7 +64,7 @@ from vllm.entrypoints.openai.engine.protocol import OpenAIBaseModel
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.quantum.compat import resolve_quantum_params
-from vllm.quantum.params import QuantumFloorParams, QuantumSeedParams
+from vllm.quantum.params import QuantumDistParams, QuantumFloorParams
 from vllm.renderers import ChatParams, TokenizeParams, merge_kwargs
 from vllm.sampling_params import (
     RequestOutputKind,
@@ -275,9 +275,9 @@ class ResponsesRequest(OpenAIBaseModel):
         default=None,
         description="Quantum Lever-backed quantum-floor sampling parameters.",
     )
-    quantum_seed: QuantumSeedParams | None = Field(
+    quantum_dist: QuantumDistParams | None = Field(
         default=None,
-        description="Quantum Lever-backed per-request PRNG seed parameters.",
+        description="Quantum Lever-backed proportional sampling parameters.",
     )
     quantum_api_key: str | None = Field(
         default=None,
@@ -286,10 +286,6 @@ class ResponsesRequest(OpenAIBaseModel):
     quantum_api_url: str | None = Field(
         default=None,
         description="Quantum Lever API base URL.",
-    )
-    quantum_source: Literal["qrng", "lever"] | None = Field(
-        default=None,
-        description="Quantum Lever entropy source.",
     )
     quantum_sampler: bool | None = Field(
         default=None,
@@ -453,7 +449,7 @@ class ResponsesRequest(OpenAIBaseModel):
         extra_args: dict[str, Any] = self.vllm_xargs if self.vllm_xargs else {}
         if self.kv_transfer_params:
             extra_args["kv_transfer_params"] = self.kv_transfer_params
-        quantum_floor, quantum_seed = resolve_quantum_params(
+        quantum_floor, quantum_dist = resolve_quantum_params(
             self, default_sampling_params
         )
         if self.ec_transfer_params:
@@ -481,7 +477,7 @@ class ResponsesRequest(OpenAIBaseModel):
             skip_special_tokens=self.skip_special_tokens,
             include_stop_str_in_output=self.include_stop_str_in_output,
             quantum_floor=quantum_floor,
-            quantum_seed=quantum_seed,
+            quantum_dist=quantum_dist,
         )
 
     def is_include_output_logprobs(self) -> bool:

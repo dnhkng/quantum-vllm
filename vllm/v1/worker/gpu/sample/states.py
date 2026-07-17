@@ -3,7 +3,6 @@
 import numpy as np
 import torch
 
-from vllm.quantum.quantum_floor import QuantumLeverClient
 from vllm.sampling_params import SamplingParams
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p
 from vllm.v1.worker.gpu.buffer_utils import UvaBackedTensor
@@ -39,6 +38,7 @@ class SamplingStates:
         # -1 means no logprobs are requested.
         self.num_logprobs.fill(NO_LOGPROBS)
         self.quantum_floor = [None] * self.max_num_reqs
+        self.quantum_dist = [None] * self.max_num_reqs
 
     def add_request(self, req_idx: int, sampling_params: SamplingParams) -> None:
         self.temperature.np[req_idx] = sampling_params.temperature
@@ -50,12 +50,6 @@ class SamplingStates:
         self.min_p.np[req_idx] = sampling_params.min_p
 
         seed = sampling_params.seed
-        if sampling_params.quantum_seed is not None:
-            client = QuantumLeverClient(sampling_params.quantum_seed)
-            try:
-                seed = client.read_u32()
-            finally:
-                client.close()
         self.seeds_set[req_idx] = seed is not None
         if seed is None:
             seed = np.random.randint(_NP_INT64_MIN, _NP_INT64_MAX)
@@ -68,6 +62,7 @@ class SamplingStates:
             num_logprobs = self.vocab_size
         self.num_logprobs[req_idx] = num_logprobs
         self.quantum_floor[req_idx] = sampling_params.quantum_floor
+        self.quantum_dist[req_idx] = sampling_params.quantum_dist
 
     def apply_staged_writes(self) -> None:
         self.temperature.copy_to_uva()
@@ -129,7 +124,9 @@ class SamplingStates:
     def max_num_logprobs(self, idx_mapping_np: np.ndarray) -> int:
         return int(np.max(self.num_logprobs[idx_mapping_np]))
 
-    def has_quantum_floor(self, idx_mapping_np: np.ndarray) -> bool:
+    def has_quantum(self, idx_mapping_np: np.ndarray) -> bool:
         return any(
-            self.quantum_floor[int(req_idx)] is not None for req_idx in idx_mapping_np
+            self.quantum_floor[int(req_idx)] is not None
+            or self.quantum_dist[int(req_idx)] is not None
+            for req_idx in idx_mapping_np
         )
