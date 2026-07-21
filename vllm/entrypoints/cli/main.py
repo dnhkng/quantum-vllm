@@ -14,19 +14,9 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
-def _is_quantum_api_check(argv: list[str]) -> bool:
-    return bool(argv) and argv[0].startswith("--quantum-")
-
-
 def main():
     if len(sys.argv) == 2 and sys.argv[1] in ("-v", "--version"):
         print(importlib.metadata.version("vllm"))
-        return
-
-    if _is_quantum_api_check(sys.argv[1:]):
-        from vllm.quantum.cli import run_quantum_api_check_from_argv
-
-        run_quantum_api_check_from_argv(sys.argv[1:])
         return
 
     import vllm.entrypoints.cli.benchmark.main
@@ -39,7 +29,7 @@ def main():
         VLLM_SUBCMD_PARSER_EPILOG,
         cli_env_setup,
     )
-    from vllm.quantum.cli import add_quantum_cli_args, maybe_run_quantum_api_check
+    from vllm.quantum.cli import add_quantum_cli_args
     from vllm.utils.argparse_utils import FlexibleArgumentParser
 
     CMD_MODULES = [
@@ -106,9 +96,6 @@ def main():
         args = parser.parse_args()
         if args.subparser in cmds:
             cmds[args.subparser].validate(args)
-
-        if maybe_run_quantum_api_check(args):
-            return
 
         if hasattr(args, "dispatch_function"):
             args.dispatch_function(args)
