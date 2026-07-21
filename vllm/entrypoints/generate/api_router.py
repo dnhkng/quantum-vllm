@@ -184,3 +184,24 @@ async def init_generate_state(
         state.openai_serving_models,
         request_logger=request_logger,
     )
+
+    from vllm.quantum.compat import quantum_defaults_from_args
+
+    quantum_defaults = quantum_defaults_from_args(args)
+    if quantum_defaults:
+        spec_active = getattr(args, "spec_tokens", None) or getattr(
+            args, "spec_method", None
+        )
+        if spec_active:
+            raise ValueError(
+                "Quantum entropy sampling is incompatible with speculative "
+                "decoding (--spec-method / --spec-tokens). Disable "
+                "speculative decoding when using --quantum-api-key."
+            )
+        for obj in (
+            state.openai_serving_responses,
+            state.openai_serving_chat,
+            state.openai_serving_completion,
+        ):
+            if obj is not None and hasattr(obj, "default_sampling_params"):
+                obj.default_sampling_params.update(quantum_defaults)
